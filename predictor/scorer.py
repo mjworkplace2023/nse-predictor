@@ -22,6 +22,7 @@ from predictor.fetch_data import (
     get_latest_price,
     get_price_change_pct,
 )
+from predictor.trade_levels import format_entry_range
 from predictor.indicators import compute_technical_score
 from predictor.sentiment import compute_sentiment_scores, fetch_all_headlines
 
@@ -48,6 +49,12 @@ class StockScore:
     sentiment_raw: Optional[float] = None
     sentiment_headline_count: int = 0
     signal: str = "NEUTRAL"         # "STRONG BUY", "BUY", "NEUTRAL", "SELL", "STRONG SELL"
+    trade_action: Optional[str] = None   # "LONG", "SHORT", "WAIT" (intraday only)
+    entry_low: Optional[float] = None
+    entry_high: Optional[float] = None
+    target_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    risk_reward: Optional[float] = None
 
 
 @dataclass
@@ -233,16 +240,50 @@ def run_prediction(
     return result
 
 
-def result_to_dataframe(result: PredictionResult) -> pd.DataFrame:
-    """Convert PredictionResult.all_scores to a pandas DataFrame for display."""
+def _is_intraday_result(result: PredictionResult) -> bool:
+    """True when stored results came from an intraday run."""
+    if result is None:
+        return False
     if result.mode == "intraday":
+        return True
+    return getattr(result, "interval", "1d") in ("5m", "15m")
+
+
+def result_to_dataframe(
+    result: PredictionResult,
+    *,
+    intraday_view: bool | None = None,
+    include_trade_levels: bool | None = None,
+) -> pd.DataFrame:
+    """Convert PredictionResult.all_scores to a pandas DataFrame for display."""
+    intraday = (
+        intraday_view
+        if intraday_view is not None
+        else _is_intraday_result(result)
+    )
+    trade_levels = (
+        include_trade_levels
+        if include_trade_levels is not None
+        else _is_intraday_result(result)
+    )
+    if intraday:
         mom_cols = ("Open %", "30m %", "1h %")
     else:
         mom_cols = ("1D %", "5D %", "20D %")
 
+    def _resolve_action(stock) -> str:
+        action = getattr(stock, "trade_action", None)
+        if action:
+            return action
+        if stock.signal in ("BUY", "STRONG BUY"):
+            return "LONG"
+        if stock.signal in ("SELL", "STRONG SELL"):
+            return "SHORT"
+        return "WAIT"
+
     rows = []
     for s in result.all_scores:
-        rows.append({
+        row = {
             "Symbol": s.symbol.replace(".NS", ""),
             "Company": s.name,
             "Price (INR)": s.price,
@@ -256,5 +297,28 @@ def result_to_dataframe(result: PredictionResult) -> pd.DataFrame:
             mom_cols[2]: s.change_20d,
             "RSI": round(s.rsi, 1) if s.rsi is not None else None,
             "News Count": s.sentiment_headline_count,
-        })
-    return pd.DataFrame(rows)
+        }
+        if intraday:
+            row["Action"] = _resolve_action(s)
+            if trade_levels:
+                row.update({
+                    "Entry Range": format_entry_range(
+                        getattr(s, "entry_low", None), getattr(s, "entry_high", None)
+                    ),
+                    "Intraday Target": getattr(s, "target_price", None),
+                    "Stop Loss": getattr(s, "stop_loss", None),
+                    "R:R": getattr(s, "risk_reward", None),
+                })
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+    if intraday and not df.empty:
+        col_order = [
+            "Symbol", "Company", "Price (INR)", "Score", "Signal", "Action",
+            "Entry Range", "Intraday Target", "Stop Loss", "R:R",
+            "Technical", "Sentiment", "Momentum",
+            "Open %", "30m %", "1h %",
+            "RSI", "News Count",
+        ]
+        df = df[[c for c in col_order if c in df.columns]]
+    return df

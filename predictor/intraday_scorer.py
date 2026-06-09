@@ -30,6 +30,7 @@ from predictor.fetch_data import (
 )
 from predictor.market_hours import IST
 from predictor.scorer import PredictionResult, StockScore, label_signal
+from predictor.trade_levels import compute_intraday_trade_levels
 from predictor.sentiment import compute_sentiment_scores, fetch_all_headlines
 
 logger = logging.getLogger(__name__)
@@ -348,11 +349,14 @@ def run_intraday_prediction(
 
             final_score = tech["total"] + sent_scaled + mom["total"]
             final_score = round(max(-100.0, min(100.0, final_score)), 2)
+            signal = label_signal(final_score)
+            price = round(get_latest_price(session_df), 2)
+            levels = compute_intraday_trade_levels(session_df, df, price, signal)
 
             stock = StockScore(
                 symbol=symbol,
                 name=get_display_name(symbol),
-                price=round(get_latest_price(session_df), 2),
+                price=price,
                 score=final_score,
                 technical_score=tech["total"],
                 sentiment_score=sent_scaled,
@@ -363,7 +367,13 @@ def run_intraday_prediction(
                 rsi=tech.get("rsi_value"),
                 sentiment_raw=sent.get("raw"),
                 sentiment_headline_count=sent.get("count", 0),
-                signal=label_signal(final_score),
+                signal=signal,
+                trade_action=levels["trade_action"],
+                entry_low=levels["entry_low"],
+                entry_high=levels["entry_high"],
+                target_price=levels["target_price"],
+                stop_loss=levels["stop_loss"],
+                risk_reward=levels["risk_reward"],
             )
             all_scores.append(stock)
 

@@ -18,6 +18,7 @@ import requests
 from dotenv import load_dotenv
 
 from predictor.scorer import PredictionResult, StockScore
+from predictor.trade_levels import format_entry_range
 
 load_dotenv()
 
@@ -41,7 +42,7 @@ def _signal_emoji(signal: str) -> str:
     return mapping.get(signal, "❓")
 
 
-def _format_stock_line(stock: StockScore, rank: int) -> str:
+def _format_daily_stock_line(stock: StockScore, rank: int) -> str:
     emoji = _signal_emoji(stock.signal)
     rsi_str = f"RSI:{stock.rsi:.0f}" if stock.rsi is not None else ""
     return (
@@ -52,39 +53,114 @@ def _format_stock_line(stock: StockScore, rank: int) -> str:
     )
 
 
-def build_message(result: PredictionResult) -> str:
-    """Build the full Telegram message string (Markdown)."""
+def _format_intraday_stock_line(stock: StockScore, rank: int) -> str:
+    emoji = _signal_emoji(stock.signal)
+    rsi_str = f"RSI:{stock.rsi:.0f}" if stock.rsi is not None else "—"
+    lines = [
+        f"{rank}. {emoji} *{stock.symbol.replace('.NS', '')}* — {stock.name}",
+        f"   ₹{stock.price:,.2f}  |  Score: {stock.score:+.1f}  |  {stock.signal}",
+        f"   Open: {stock.change_1d:+.2f}%  |  30m: {stock.change_5d:+.2f}%  |  "
+        f"1h: {stock.change_20d:+.2f}%  |  {rsi_str}",
+    ]
+    action = getattr(stock, "trade_action", None)
+    if action in ("LONG", "SHORT"):
+        entry = format_entry_range(
+            getattr(stock, "entry_low", None), getattr(stock, "entry_high", None)
+        )
+        target_price = getattr(stock, "target_price", None)
+        stop_loss = getattr(stock, "stop_loss", None)
+        risk_reward = getattr(stock, "risk_reward", None)
+        target = f"₹{target_price:,.2f}" if target_price else "—"
+        sl = f"₹{stop_loss:,.2f}" if stop_loss else "—"
+        rr = f"{risk_reward:.1f}" if risk_reward else "—"
+        lines.append(
+            f"   📍 {action}  Entry: {entry}  Tgt: {target}  SL: {sl}  R:R {rr}"
+        )
+    return "\n".join(lines)
+
+
+def build_daily_message(result: PredictionResult) -> str:
+    """Build Telegram message for daily swing predictions."""
+    n = len(result.top_gainers)
     lines = [
         "🇮🇳 *NSE Nifty50 Daily Prediction*",
         f"📅 {result.run_timestamp}",
         f"📊 Stocks analysed: {result.symbols_processed}",
         "",
         "━━━━━━━━━━━━━━━━━━━━",
-        "🏆 *TOP 5 POTENTIAL GAINERS*",
+        f"🏆 *TOP {n} POTENTIAL GAINERS*",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
 
     for i, stock in enumerate(result.top_gainers, start=1):
-        lines.append(_format_stock_line(stock, i))
+        lines.append(_format_daily_stock_line(stock, i))
         lines.append("")
 
+    n_losers = len(result.top_losers)
     lines += [
         "━━━━━━━━━━━━━━━━━━━━",
-        "⚠️ *TOP 5 POTENTIAL LOSERS*",
+        f"⚠️ *TOP {n_losers} POTENTIAL LOSERS*",
         "━━━━━━━━━━━━━━━━━━━━",
     ]
 
     for i, stock in enumerate(result.top_losers, start=1):
-        lines.append(_format_stock_line(stock, i))
+        lines.append(_format_daily_stock_line(stock, i))
         lines.append("")
 
     lines += [
         "━━━━━━━━━━━━━━━━━━━━",
         "⚡ _Score = Technical (±40) + Sentiment (±30) + Momentum (±30)_",
+        "_1D/5D = price % change over 1 and 5 trading days_",
         "_This is NOT financial advice. Trade at your own risk._",
     ]
 
     return "\n".join(lines)
+
+
+def build_intraday_message(result: PredictionResult) -> str:
+    """Build Telegram message for intraday predictions."""
+    interval = getattr(result, "interval", "5m")
+    n = len(result.top_gainers)
+    lines = [
+        f"🇮🇳 *NSE Intraday Alert ({interval})*",
+        f"📅 {result.run_timestamp}",
+        f"📊 Stocks analysed: {result.symbols_processed}",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"🏆 *TOP {n} GAINERS*",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    for i, stock in enumerate(result.top_gainers, start=1):
+        lines.append(_format_intraday_stock_line(stock, i))
+        lines.append("")
+
+    n_losers = len(result.top_losers)
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"⚠️ *TOP {n_losers} LOSERS*",
+        "━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    for i, stock in enumerate(result.top_losers, start=1):
+        lines.append(_format_intraday_stock_line(stock, i))
+        lines.append("")
+
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━",
+        "⚡ _Technical ±45 · Sentiment ±15 · Momentum ±40_",
+        "_Open/30m/1h = price % change (not volume)_",
+        "_This is NOT financial advice. Trade at your own risk._",
+    ]
+
+    return "\n".join(lines)
+
+
+def build_message(result: PredictionResult) -> str:
+    """Build the full Telegram message string (Markdown)."""
+    if result.mode == "intraday":
+        return build_intraday_message(result)
+    return build_daily_message(result)
 
 
 # ---------------------------------------------------------------------------

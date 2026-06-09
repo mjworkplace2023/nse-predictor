@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" role="img" aria-label="Butterfly Investment">
+  <defs>
+    <linearGradient id="wingL" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c4dff"/>
+      <stop offset="100%" stop-color="#448aff"/>
+    </linearGradient>
+    <linearGradient id="wingR" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ff6b9d"/>
+      <stop offset="100%" stop-color="#ffa726"/>
+    </linearGradient>
+  </defs>
+  <!-- Left wing -->
+  <ellipse cx="95" cy="52" rx="42" ry="30" fill="url(#wingL)" opacity="0.92"/>
+  <ellipse cx="78" cy="68" rx="24" ry="18" fill="url(#wingL)" opacity="0.75"/>
+  <!-- Right wing -->
+  <ellipse cx="145" cy="52" rx="42" ry="30" fill="url(#wingR)" opacity="0.92"/>
+  <ellipse cx="162" cy="68" rx="24" ry="18" fill="url(#wingR)" opacity="0.75"/>
+  <!-- Body -->
+  <ellipse cx="120" cy="58" rx="5" ry="22" fill="#263238"/>
+  <circle cx="120" cy="34" r="6" fill="#263238"/>
+  <!-- Antennae -->
+  <path d="M116 30 Q108 18 102 14" stroke="#263238" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <path d="M124 30 Q132 18 138 14" stroke="#263238" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <!-- Brand text -->
+  <text x="185" y="52" font-family="Georgia, 'Times New Roman', serif" font-size="26" font-weight="700" fill="#1a237e">Butterfly</text>
+  <text x="185" y="78" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" fill="#546e7a" letter-spacing="2">INVESTMENT</text>
+</svg>
