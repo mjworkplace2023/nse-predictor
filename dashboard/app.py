@@ -31,7 +31,10 @@ from dotenv import load_dotenv
 
 from data.nifty50_symbols import NIFTY50_SYMBOLS, get_display_name
 from predictor.scorer import run_prediction, result_to_dataframe, PredictionResult
+from predictor.intraday_scorer import run_intraday_prediction, get_intraday_config
+from predictor.market_hours import is_market_open, market_status_message, now_ist
 from alerts.telegram_alert import send_prediction_alert
+from alerts.whatsapp_alert import send_intraday_whatsapp_alert
 
 load_dotenv()
 
@@ -51,57 +54,151 @@ logging.basicConfig(level=logging.WARNING)
 # Sidebar
 # ---------------------------------------------------------------------------
 st.sidebar.title("⚙️ Settings")
+prediction_mode = st.sidebar.radio(
+    "Prediction mode",
+    options=["Daily (Swing)", "Intraday (5-min)", "Intraday (15-min)"],
+    index=0,
+    help="Daily uses end-of-day data. Intraday uses live candles for same-day trading.",
+)
 top_n = st.sidebar.slider("Top N stocks", min_value=3, max_value=10, value=5)
+is_intraday = prediction_mode.startswith("Intraday")
+intraday_interval = "15m" if prediction_mode == "Intraday (15-min)" else "5m"
+
+auto_refresh = st.sidebar.checkbox(
+    "Auto-refresh every 5 min",
+    value=False,
+    disabled=not is_intraday,
+    help="Only runs during NSE market hours (09:15–15:30 IST, weekdays).",
+)
 send_telegram = st.sidebar.checkbox("Send Telegram alert after run", value=False)
+send_whatsapp = st.sidebar.checkbox(
+    "Send WhatsApp group alert (intraday)",
+    value=False,
+    disabled=not is_intraday,
+    help="Requires WHATSAPP_* credentials in .env",
+)
+
+st.sidebar.markdown("---")
+st.sidebar.caption(market_status_message())
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("**About**")
-st.sidebar.markdown(
-    "Scores NSE Nifty50 stocks using:\n"
-    "- Technical indicators (±40)\n"
-    "- News sentiment (±30)\n"
-    "- Price momentum (±30)\n\n"
-    "_Not financial advice._"
-)
+if is_intraday:
+    st.sidebar.markdown(
+        f"Intraday ({intraday_interval}) scores using:\n"
+        "- Technicals + VWAP (±45)\n"
+        "- News sentiment (±15)\n"
+        "- Open / 30m / 1h momentum (±40)\n\n"
+        "_Best during market hours 09:15–15:30 IST._\n"
+        "_Not financial advice._"
+    )
+else:
+    st.sidebar.markdown(
+        "Daily mode scores using:\n"
+        "- Technical indicators (±40)\n"
+        "- News sentiment (±30)\n"
+        "- Price momentum (±30)\n\n"
+        "_Not financial advice._"
+    )
 
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
 if "result" not in st.session_state:
     st.session_state.result = None
+if "last_auto_refresh" not in st.session_state:
+    st.session_state.last_auto_refresh = None
 
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
 st.title("🇮🇳 NSE Nifty50 Stock Predictor")
-st.caption(
-    "Combines RSI · MACD · EMA · Bollinger Bands · Volume · VADER Sentiment · Price Momentum"
-)
+if is_intraday:
+    st.caption(
+        f"Intraday ({intraday_interval}): RSI · MACD · EMA · Bollinger · VWAP · Volume · "
+        "Sentiment · Open/30m/1h Momentum"
+    )
+else:
+    st.caption(
+        "Daily: RSI · MACD · EMA · Bollinger Bands · Volume · VADER Sentiment · Price Momentum"
+    )
 
 col_run, col_info = st.columns([2, 5])
 with col_run:
     run_button = st.button("🚀 Run Prediction Now", type="primary", use_container_width=True)
 
 # ---------------------------------------------------------------------------
-# Run prediction
+# Run prediction (manual + auto-refresh)
 # ---------------------------------------------------------------------------
-if run_button:
-    with st.spinner("Fetching data and computing scores — this takes ~60 s …"):
-        result: PredictionResult = run_prediction(top_n=top_n)
-        st.session_state.result = result
 
-    if send_telegram:
-        ok = send_prediction_alert(result)
+def _run_prediction(intraday: bool, interval: str, n: int) -> PredictionResult:
+    if intraday:
+        return run_intraday_prediction(top_n=n, interval=interval)
+    return run_prediction(top_n=n)
+
+
+def _dispatch_alerts(res: PredictionResult, telegram: bool, whatsapp: bool) -> None:
+    if telegram:
+        ok = send_prediction_alert(res)
         if ok:
             st.success("✅ Telegram alert sent!")
         else:
             st.warning("⚠️ Telegram alert failed — check credentials in .env")
+    if whatsapp and res.mode == "intraday":
+        ok = send_intraday_whatsapp_alert(res)
+        if ok:
+            st.success("✅ WhatsApp group alert sent!")
+        else:
+            st.warning("⚠️ WhatsApp alert failed — check WHATSAPP_* in .env")
+
+
+if run_button:
+    spinner_msg = (
+        f"Fetching {intraday_interval} intraday data — this takes ~90 s …"
+        if is_intraday
+        else "Fetching data and computing scores — this takes ~60 s …"
+    )
+    with st.spinner(spinner_msg):
+        result: PredictionResult = _run_prediction(is_intraday, intraday_interval, top_n)
+        st.session_state.result = result
+    _dispatch_alerts(result, send_telegram, send_whatsapp)
+
+
+@st.fragment(run_every=datetime.timedelta(minutes=5))
+def intraday_auto_refresh():
+    """Re-run intraday prediction every 5 minutes during market hours."""
+    if not (is_intraday and auto_refresh):
+        return
+    if not is_market_open():
+        st.sidebar.warning("Auto-refresh paused — market closed.")
+        return
+
+    with st.spinner(f"Auto-refreshing {intraday_interval} intraday data…"):
+        refreshed = _run_prediction(True, intraday_interval, top_n)
+        st.session_state.result = refreshed
+        st.session_state.last_auto_refresh = now_ist().strftime("%H:%M:%S IST")
+
+    if send_whatsapp:
+        send_intraday_whatsapp_alert(refreshed)
+
+    st.toast(f"Refreshed at {st.session_state.last_auto_refresh}", icon="🔄")
+
+
+intraday_auto_refresh()
 
 result: PredictionResult = st.session_state.result
 
 if result is None:
-    st.info("👆 Click **Run Prediction Now** to start the analysis.")
+    hint = (
+        "👆 Click **Run Prediction Now** or enable **Auto-refresh** (intraday, market hours)."
+        if is_intraday and auto_refresh
+        else "👆 Click **Run Prediction Now** to start the analysis."
+    )
+    st.info(hint)
     st.stop()
+
+if st.session_state.last_auto_refresh:
+    st.caption(f"Last auto-refresh: {st.session_state.last_auto_refresh}")
 
 # ---------------------------------------------------------------------------
 # Summary KPIs
@@ -135,6 +232,7 @@ tab_overview, tab_gainers, tab_losers, tab_detail = st.tabs(
 # ---- Leaderboard -----------------------------------------------------------
 with tab_overview:
     df_all = result_to_dataframe(result)
+    mom_cols = ["Open %", "30m %", "1h %"] if result.mode == "intraday" else ["1D %", "5D %", "20D %"]
 
     def color_score(val):
         if isinstance(val, (int, float)):
@@ -149,21 +247,22 @@ with tab_overview:
             return "color: #00cc44" if val > 0 else "color: #ff4444" if val < 0 else ""
         return ""
 
+    format_dict = {
+        "Price (INR)": "₹{:,.2f}",
+        "Score": "{:+.1f}",
+        "Technical": "{:+.1f}",
+        "Sentiment": "{:+.1f}",
+        "Momentum": "{:+.1f}",
+        "RSI": "{:.1f}",
+    }
+    for col in mom_cols:
+        format_dict[col] = "{:+.2f}%"
+
     styled = (
         df_all.style
         .map(color_score, subset=["Score", "Technical", "Sentiment", "Momentum"])
-        .map(color_pct, subset=["1D %", "5D %", "20D %"])
-        .format({
-            "Price (INR)": "₹{:,.2f}",
-            "Score": "{:+.1f}",
-            "Technical": "{:+.1f}",
-            "Sentiment": "{:+.1f}",
-            "Momentum": "{:+.1f}",
-            "1D %": "{:+.2f}%",
-            "5D %": "{:+.2f}%",
-            "20D %": "{:+.2f}%",
-            "RSI": "{:.1f}",
-        }, na_rep="—")
+        .map(color_pct, subset=mom_cols)
+        .format(format_dict, na_rep="—")
     )
     st.dataframe(styled, use_container_width=True, height=600)
 
@@ -231,8 +330,12 @@ with tab_gainers:
         with st.expander(f"📈 {s.symbol.replace('.NS','')} — {s.name}  |  Score: {s.score:+.1f}  |  {s.signal}"):
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Price", f"₹{s.price:,.2f}")
-            c2.metric("1-Day Change", f"{s.change_1d:+.2f}%")
-            c3.metric("5-Day Change", f"{s.change_5d:+.2f}%")
+            if result.mode == "intraday":
+                c2.metric("Since Open", f"{s.change_1d:+.2f}%")
+                c3.metric("30-Min Change", f"{s.change_5d:+.2f}%")
+            else:
+                c2.metric("1-Day Change", f"{s.change_1d:+.2f}%")
+                c3.metric("5-Day Change", f"{s.change_5d:+.2f}%")
             c4.metric("RSI", f"{s.rsi:.1f}" if s.rsi else "—")
             st.write(f"Technical: {s.technical_score:+.1f} | Sentiment: {s.sentiment_score:+.1f} | Momentum: {s.momentum_score:+.1f}")
             st.write(f"News headlines matched: {s.sentiment_headline_count}")
@@ -267,8 +370,12 @@ with tab_losers:
         with st.expander(f"📉 {s.symbol.replace('.NS','')} — {s.name}  |  Score: {s.score:+.1f}  |  {s.signal}"):
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Price", f"₹{s.price:,.2f}")
-            c2.metric("1-Day Change", f"{s.change_1d:+.2f}%")
-            c3.metric("5-Day Change", f"{s.change_5d:+.2f}%")
+            if result.mode == "intraday":
+                c2.metric("Since Open", f"{s.change_1d:+.2f}%")
+                c3.metric("30-Min Change", f"{s.change_5d:+.2f}%")
+            else:
+                c2.metric("1-Day Change", f"{s.change_1d:+.2f}%")
+                c3.metric("5-Day Change", f"{s.change_5d:+.2f}%")
             c4.metric("RSI", f"{s.rsi:.1f}" if s.rsi else "—")
             st.write(f"Technical: {s.technical_score:+.1f} | Sentiment: {s.sentiment_score:+.1f} | Momentum: {s.momentum_score:+.1f}")
 
@@ -296,16 +403,32 @@ with tab_detail:
 
             mc1, mc2, mc3, mc4, mc5 = st.columns(5)
             mc1.metric("Price", f"₹{score_obj.price:,.2f}")
-            mc2.metric("1D %", f"{score_obj.change_1d:+.2f}%")
-            mc3.metric("5D %", f"{score_obj.change_5d:+.2f}%")
-            mc4.metric("20D %", f"{score_obj.change_20d:+.2f}%")
+            if result.mode == "intraday":
+                mc2.metric("Since Open", f"{score_obj.change_1d:+.2f}%")
+                mc3.metric("30m %", f"{score_obj.change_5d:+.2f}%")
+                mc4.metric("1h %", f"{score_obj.change_20d:+.2f}%")
+            else:
+                mc2.metric("1D %", f"{score_obj.change_1d:+.2f}%")
+                mc3.metric("5D %", f"{score_obj.change_5d:+.2f}%")
+                mc4.metric("20D %", f"{score_obj.change_20d:+.2f}%")
             mc5.metric("RSI", f"{score_obj.rsi:.1f}" if score_obj.rsi else "—")
 
         # Fetch chart data fresh
         with st.spinner("Loading chart data..."):
             try:
                 ticker = yf.Ticker(selected)
-                chart_df = ticker.history(period="3mo", interval="1d", auto_adjust=True)
+                if result.mode == "intraday":
+                    chart_interval = getattr(result, "interval", "5m")
+                    cfg = get_intraday_config(chart_interval)
+                    chart_df = ticker.history(
+                        period=cfg.period, interval=chart_interval, auto_adjust=True
+                    )
+                    chart_title = f"{selected} — {chart_interval} Intraday Chart"
+                    ema_fast, ema_slow = cfg.ema_fast, cfg.ema_slow
+                else:
+                    chart_df = ticker.history(period="3mo", interval="1d", auto_adjust=True)
+                    chart_title = f"{selected} — 3-Month Chart"
+                    ema_fast, ema_slow = 20, 50
 
                 if not chart_df.empty:
                     # Candlestick
@@ -322,18 +445,17 @@ with tab_detail:
                         decreasing_line_color="#ff4444",
                     ))
 
-                    # EMA 20 and 50
-                    ema20 = ta_lib.trend.EMAIndicator(chart_df["Close"], window=20).ema_indicator()
-                    ema50 = ta_lib.trend.EMAIndicator(chart_df["Close"], window=50).ema_indicator()
+                    ema20 = ta_lib.trend.EMAIndicator(chart_df["Close"], window=ema_fast).ema_indicator()
+                    ema50 = ta_lib.trend.EMAIndicator(chart_df["Close"], window=ema_slow).ema_indicator()
                     if ema20 is not None:
                         fig_candle.add_trace(go.Scatter(
                             x=chart_df.index, y=ema20,
-                            name="EMA 20", line=dict(color="#4da6ff", width=1.5)
+                            name=f"EMA {ema_fast}", line=dict(color="#4da6ff", width=1.5)
                         ))
                     if ema50 is not None:
                         fig_candle.add_trace(go.Scatter(
                             x=chart_df.index, y=ema50,
-                            name="EMA 50", line=dict(color="#ffa64d", width=1.5)
+                            name=f"EMA {ema_slow}", line=dict(color="#ffa64d", width=1.5)
                         ))
 
                     # Bollinger Bands
@@ -352,7 +474,7 @@ with tab_detail:
                         ))
 
                     fig_candle.update_layout(
-                        title=f"{selected} — 3-Month Chart",
+                        title=chart_title,
                         xaxis_title="Date",
                         yaxis_title="Price (INR)",
                         xaxis_rangeslider_visible=False,
@@ -378,17 +500,23 @@ with tab_detail:
                     st.plotly_chart(fig_vol, use_container_width=True)
 
                     # RSI chart
-                    rsi_series = ta_lib.momentum.RSIIndicator(chart_df["Close"], window=14).rsi()
+                    if result.mode == "intraday":
+                        rsi_window = get_intraday_config(
+                            getattr(result, "interval", "5m")
+                        ).rsi_window
+                    else:
+                        rsi_window = 14
+                    rsi_series = ta_lib.momentum.RSIIndicator(chart_df["Close"], window=rsi_window).rsi()
                     if rsi_series is not None:
                         fig_rsi = go.Figure()
                         fig_rsi.add_trace(go.Scatter(
                             x=chart_df.index, y=rsi_series,
-                            name="RSI 14", line=dict(color="#b366ff"),
+                            name=f"RSI {rsi_window}", line=dict(color="#b366ff"),
                         ))
                         fig_rsi.add_hline(y=70, line_dash="dash", line_color="red", annotation_text="Overbought")
                         fig_rsi.add_hline(y=30, line_dash="dash", line_color="green", annotation_text="Oversold")
                         fig_rsi.update_layout(
-                            title="RSI (14)",
+                            title=f"RSI ({rsi_window})",
                             height=200,
                             yaxis=dict(range=[0, 100]),
                             margin=dict(t=30, b=10),
@@ -401,10 +529,14 @@ with tab_detail:
         # Score breakdown
         if score_obj:
             st.markdown("#### Score Breakdown")
+            if result.mode == "intraday":
+                max_vals = [45, 15, 40]
+            else:
+                max_vals = [40, 30, 30]
             breakdown_data = {
                 "Component": ["Technical", "Sentiment", "Momentum"],
                 "Score": [score_obj.technical_score, score_obj.sentiment_score, score_obj.momentum_score],
-                "Max": [40, 30, 30],
+                "Max": max_vals,
             }
             bd_df = pd.DataFrame(breakdown_data)
             bd_df["% of Max"] = (bd_df["Score"] / bd_df["Max"] * 100).round(1)

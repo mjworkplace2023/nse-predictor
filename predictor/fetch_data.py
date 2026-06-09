@@ -3,11 +3,17 @@ Fetches historical OHLCV data for NSE stocks using yfinance.
 All data is in-memory — no database or disk cache.
 """
 
+import datetime
 import logging
 from typing import Dict, Optional
 
 import pandas as pd
+import pytz
 import yfinance as yf
+
+IST = pytz.timezone("Asia/Kolkata")
+MARKET_OPEN = datetime.time(9, 15)
+MARKET_CLOSE = datetime.time(15, 30)
 
 logger = logging.getLogger(__name__)
 
@@ -91,3 +97,67 @@ def get_price_change_pct(df: pd.DataFrame, days: int = 1) -> float:
     close = df["Close"]
     pct = (close.iloc[-1] - close.iloc[-(days + 1)]) / close.iloc[-(days + 1)] * 100
     return round(float(pct), 4)
+
+
+def _to_ist_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert DataFrame index to Asia/Kolkata timezone."""
+    out = df.copy()
+    idx = pd.to_datetime(out.index)
+    if idx.tz is None:
+        idx = idx.tz_localize("UTC").tz_convert(IST)
+    else:
+        idx = idx.tz_convert(IST)
+    out.index = idx
+    return out
+
+
+def filter_market_hours(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only NSE regular session bars (09:15–15:30 IST)."""
+    if df.empty:
+        return df
+    df_ist = _to_ist_index(df)
+    times = df_ist.index.time
+    mask = (times >= MARKET_OPEN) & (times <= MARKET_CLOSE)
+    return df_ist[mask]
+
+
+def get_latest_session(df: pd.DataFrame) -> pd.DataFrame:
+    """Return intraday bars from the most recent trading session."""
+    session_df = filter_market_hours(df)
+    if session_df.empty:
+        return session_df
+    latest_date = session_df.index[-1].date()
+    return session_df[session_df.index.date == latest_date]
+
+
+def fetch_intraday_data(
+    symbol: str,
+    period: str = "5d",
+    interval: str = "5m",
+) -> Optional[pd.DataFrame]:
+    """
+    Download intraday OHLCV data for a single NSE symbol.
+
+    yfinance limits: 5m bars available for the last ~60 days.
+    """
+    return fetch_stock_data(symbol, period=period, interval=interval)
+
+
+def get_intraday_change_pct(df: pd.DataFrame, bars_back: int = 1) -> float:
+    """Percentage price change over the last `bars_back` intraday bars."""
+    if len(df) < bars_back + 1:
+        return 0.0
+    close = df["Close"]
+    pct = (close.iloc[-1] - close.iloc[-(bars_back + 1)]) / close.iloc[-(bars_back + 1)] * 100
+    return round(float(pct), 4)
+
+
+def get_change_since_open(session_df: pd.DataFrame) -> float:
+    """Percentage change from today's session open to latest close."""
+    if session_df.empty or len(session_df) < 1:
+        return 0.0
+    open_price = float(session_df["Open"].iloc[0])
+    if open_price == 0:
+        return 0.0
+    latest = float(session_df["Close"].iloc[-1])
+    return round((latest - open_price) / open_price * 100, 4)

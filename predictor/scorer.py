@@ -58,6 +58,8 @@ class PredictionResult:
     all_scores: List[StockScore] = field(default_factory=list)
     symbols_processed: int = 0
     symbols_failed: int = 0
+    mode: str = "daily"       # "daily" or "intraday"
+    interval: str = "1d"      # "1d", "5m", or "15m"
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +235,11 @@ def run_prediction(
 
 def result_to_dataframe(result: PredictionResult) -> pd.DataFrame:
     """Convert PredictionResult.all_scores to a pandas DataFrame for display."""
+    if result.mode == "intraday":
+        mom_cols = ("Open %", "30m %", "1h %")
+    else:
+        mom_cols = ("1D %", "5D %", "20D %")
+
     rows = []
     for s in result.all_scores:
         rows.append({
@@ -244,9 +251,9 @@ def result_to_dataframe(result: PredictionResult) -> pd.DataFrame:
             "Technical": s.technical_score,
             "Sentiment": s.sentiment_score,
             "Momentum": s.momentum_score,
-            "1D %": s.change_1d,
-            "5D %": s.change_5d,
-            "20D %": s.change_20d,
+            mom_cols[0]: s.change_1d,
+            mom_cols[1]: s.change_5d,
+            mom_cols[2]: s.change_20d,
             "RSI": round(s.rsi, 1) if s.rsi is not None else None,
             "News Count": s.sentiment_headline_count,
         })

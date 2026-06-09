@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 load_dotenv()
 
 from predictor.scorer import run_prediction, result_to_dataframe
+from predictor.intraday_scorer import run_intraday_prediction
 from alerts.telegram_alert import send_prediction_alert
 
 # ---------------------------------------------------------------------------
@@ -48,18 +49,22 @@ IST = pytz.timezone("Asia/Kolkata")
 # Core job
 # ---------------------------------------------------------------------------
 
-def run_prediction_job(top_n: int = 5, send_alert: bool = True) -> None:
+def run_prediction_job(top_n: int = 5, send_alert: bool = True, intraday: bool = False) -> None:
     """Execute one full prediction cycle."""
     now_ist = datetime.datetime.now(IST)
+    mode_label = "INTRADAY" if intraday else "DAILY"
     logger.info("=" * 60)
-    logger.info("NSE Predictor run started at %s", now_ist.strftime("%Y-%m-%d %H:%M:%S IST"))
+    logger.info("NSE Predictor %s run started at %s", mode_label, now_ist.strftime("%Y-%m-%d %H:%M:%S IST"))
     logger.info("=" * 60)
 
-    result = run_prediction(top_n=top_n)
+    if intraday:
+        result = run_intraday_prediction(top_n=top_n)
+    else:
+        result = run_prediction(top_n=top_n)
 
     # Print summary to console
     print("\n" + "=" * 60)
-    print(f"NSE NIFTY50 PREDICTION — {result.run_timestamp}")
+    print(f"NSE NIFTY50 {mode_label} PREDICTION — {result.run_timestamp}")
     print(f"Stocks processed: {result.symbols_processed}  |  Failed: {result.symbols_failed}")
     print("=" * 60)
 
@@ -67,20 +72,22 @@ def run_prediction_job(top_n: int = 5, send_alert: bool = True) -> None:
     print("-" * 40)
     for i, s in enumerate(result.top_gainers, 1):
         rsi_str = f"RSI={s.rsi:.0f}" if s.rsi else ""
+        mom_label = "Open" if intraday else "1D"
         print(
             f"{i:2}. {s.symbol.replace('.NS',''):12} {s.name[:25]:25} "
             f"Score={s.score:+6.1f}  ₹{s.price:>9,.2f}  "
-            f"1D={s.change_1d:+5.2f}%  {s.signal:11}  {rsi_str}"
+            f"{mom_label}={s.change_1d:+5.2f}%  {s.signal:11}  {rsi_str}"
         )
 
     print(f"\n{'TOP ' + str(top_n) + ' POTENTIAL LOSERS':}")
     print("-" * 40)
     for i, s in enumerate(result.top_losers, 1):
         rsi_str = f"RSI={s.rsi:.0f}" if s.rsi else ""
+        mom_label = "Open" if intraday else "1D"
         print(
             f"{i:2}. {s.symbol.replace('.NS',''):12} {s.name[:25]:25} "
             f"Score={s.score:+6.1f}  ₹{s.price:>9,.2f}  "
-            f"1D={s.change_1d:+5.2f}%  {s.signal:11}  {rsi_str}"
+            f"{mom_label}={s.change_1d:+5.2f}%  {s.signal:11}  {rsi_str}"
         )
 
     print("\n" + "=" * 60)
@@ -158,14 +165,33 @@ Examples:
         action="store_true",
         help="Run on a daily schedule at 9:30 AM IST (weekdays only)",
     )
+    parser.add_argument(
+        "--intraday",
+        action="store_true",
+        help="Use intraday scoring (best during market hours)",
+    )
+    parser.add_argument(
+        "--interval",
+        choices=["5m", "15m"],
+        default=os.getenv("INTRADAY_INTERVAL", "5m"),
+        help="Intraday candle interval when --intraday is set (default: 5m)",
+    )
 
     args = parser.parse_args()
     send_alert = not args.no_alert
 
     if args.schedule:
         schedule_job(top_n=args.top, send_alert=send_alert)
+    elif args.intraday:
+        from run_intraday import run_intraday_job
+        run_intraday_job(
+            top_n=args.top,
+            interval=args.interval,
+            send_whatsapp=send_alert,
+            force=True,
+        )
     else:
-        run_prediction_job(top_n=args.top, send_alert=send_alert)
+        run_prediction_job(top_n=args.top, send_alert=send_alert, intraday=False)
 
 
 if __name__ == "__main__":
