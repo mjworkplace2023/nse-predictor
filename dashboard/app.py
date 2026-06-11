@@ -130,7 +130,11 @@ def _build_leaderboard_dataframe(
     has_intraday_trade_levels: bool,
 ) -> pd.DataFrame:
     """Build leaderboard table; intraday price levels only from real intraday runs."""
-    df = result_to_dataframe(result, intraday_view=show_intraday_ui)
+    df = result_to_dataframe(
+        result,
+        intraday_view=show_intraday_ui,
+        include_trade_levels=has_intraday_trade_levels,
+    )
 
     if "Target" in df.columns and "Intraday Target" not in df.columns:
         df = df.rename(columns={"Target": "Intraday Target"})
@@ -144,6 +148,11 @@ def _build_leaderboard_dataframe(
             df = df.drop(columns=drop_cols)
 
     return df
+
+
+def _columns_in(df: pd.DataFrame, *names: str) -> list[str]:
+    """Return column names that exist in df (avoids Styler KeyError on subset)."""
+    return [c for c in names if c in df.columns]
 
 
 def _leaderboard_column_config(df: pd.DataFrame) -> dict:
@@ -658,59 +667,77 @@ with tab_overview:
         show_intraday_ui=show_intraday_ui,
         has_intraday_trade_levels=has_intraday_trade_levels,
     )
-    mom_cols = ["Open %", "30m %", "1h %"] if show_intraday_ui else ["1D %", "5D %", "20D %"]
 
-    def color_score(val):
-        if isinstance(val, (int, float)):
-            if val >= 20:
-                return "color: #00cc44; font-weight: bold"
-            elif val <= -20:
-                return "color: #ff4444; font-weight: bold"
-        return ""
+    if df_all.empty:
+        st.warning("No stock data to display. Click **Run Prediction Now** to refresh.")
+    else:
+        mom_cols = _columns_in(
+            df_all,
+            *(
+                ("Open %", "30m %", "1h %")
+                if show_intraday_ui
+                else ("1D %", "5D %", "20D %")
+            ),
+        )
+        score_cols = _columns_in(
+            df_all, "Score", "Technical", "Sentiment", "Momentum"
+        )
 
-    def color_pct(val):
-        if isinstance(val, (int, float)):
-            return "color: #00cc44" if val > 0 else "color: #ff4444" if val < 0 else ""
-        return ""
+        def color_score(val):
+            if isinstance(val, (int, float)):
+                if val >= 20:
+                    return "color: #00cc44; font-weight: bold"
+                elif val <= -20:
+                    return "color: #ff4444; font-weight: bold"
+            return ""
 
-    format_dict = {
-        "Price (INR)": "₹{:,.2f}",
-        "Score": "{:+.1f}",
-        "Technical": "{:+.1f}",
-        "Sentiment": "{:+.1f}",
-        "Momentum": "{:+.1f}",
-        "RSI": "{:.1f}",
-    }
-    for col in mom_cols:
-        format_dict[col] = "{:+.2f}%"
-    if has_intraday_trade_levels:
-        format_dict.update({
-            "Intraday Target": "₹{:,.2f}",
-            "Target": "₹{:,.2f}",
-            "Stop Loss": "₹{:,.2f}",
-            "R:R": "{:.1f}",
-        })
+        def color_pct(val):
+            if isinstance(val, (int, float)):
+                return "color: #00cc44" if val > 0 else "color: #ff4444" if val < 0 else ""
+            return ""
 
-    signal_action_cols = [c for c in ("Signal", "Action") if c in df_all.columns]
+        format_dict = {
+            col: fmt
+            for col, fmt in {
+                "Price (INR)": "₹{:,.2f}",
+                "Score": "{:+.1f}",
+                "Technical": "{:+.1f}",
+                "Sentiment": "{:+.1f}",
+                "Momentum": "{:+.1f}",
+                "RSI": "{:.1f}",
+                "Open %": "{:+.2f}%",
+                "30m %": "{:+.2f}%",
+                "1h %": "{:+.2f}%",
+                "1D %": "{:+.2f}%",
+                "5D %": "{:+.2f}%",
+                "20D %": "{:+.2f}%",
+                "Intraday Target": "₹{:,.2f}",
+                "Target": "₹{:,.2f}",
+                "Stop Loss": "₹{:,.2f}",
+                "R:R": "{:.1f}",
+            }.items()
+            if col in df_all.columns
+        }
 
-    styled = (
-        df_all.style
-        .map(color_score, subset=["Score", "Technical", "Sentiment", "Momentum"])
-        .map(color_pct, subset=mom_cols)
-        .format(format_dict, na_rep="—")
-    )
-    if signal_action_cols:
-        styled = styled.map(_style_signal_or_action, subset=signal_action_cols)
+        signal_action_cols = _columns_in(df_all, "Signal", "Action")
 
-    column_config = _leaderboard_column_config(df_all)
+        styled = df_all.style.format(format_dict, na_rep="—")
+        if score_cols:
+            styled = styled.map(color_score, subset=score_cols)
+        if mom_cols:
+            styled = styled.map(color_pct, subset=mom_cols)
+        if signal_action_cols:
+            styled = styled.map(_style_signal_or_action, subset=signal_action_cols)
 
-    st.dataframe(
-        styled,
-        use_container_width=True,
-        height=600,
-        column_order=list(df_all.columns),
-        column_config=column_config,
-    )
+        column_config = _leaderboard_column_config(df_all)
+
+        st.dataframe(
+            styled,
+            use_container_width=True,
+            height=600,
+            column_order=list(df_all.columns),
+            column_config=column_config,
+        )
 
     # Download button
     csv = df_all.to_csv(index=False)

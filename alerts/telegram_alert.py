@@ -167,6 +167,12 @@ def build_message(result: PredictionResult) -> str:
 # Sender
 # ---------------------------------------------------------------------------
 
+def _parse_chat_ids(chat_id: Optional[str] = None) -> list[str]:
+    """Return one or more chat IDs (comma-separated in TELEGRAM_CHAT_ID)."""
+    raw = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 def send_telegram_message(
     message: str,
     bot_token: Optional[str] = None,
@@ -174,14 +180,17 @@ def send_telegram_message(
     parse_mode: str = "Markdown",
 ) -> bool:
     """
-    Send a plain text message to a Telegram chat.
+    Send a plain text message to one or more Telegram chats.
 
-    Returns True on success, False on failure.
+    TELEGRAM_CHAT_ID may be a single ID or comma-separated list, e.g.
+    ``-1001234567890,5966698118`` (group + personal).
+
+    Returns True if at least one send succeeds.
     """
     token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
-    cid = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
+    chat_ids = _parse_chat_ids(chat_id)
 
-    if not token or not cid:
+    if not token or not chat_ids:
         logger.warning(
             "Telegram credentials not configured. "
             "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env"
@@ -189,24 +198,31 @@ def send_telegram_message(
         return False
 
     url = TELEGRAM_API_BASE.format(token=token)
-    payload = {
-        "chat_id": cid,
-        "text": message,
-        "parse_mode": parse_mode,
-        "disable_web_page_preview": True,
-    }
+    sent_any = False
 
-    try:
-        response = requests.post(url, json=payload, timeout=15)
-        response.raise_for_status()
-        logger.info("Telegram alert sent successfully.")
-        return True
-    except requests.exceptions.HTTPError as exc:
-        logger.error("Telegram HTTP error: %s — %s", exc, response.text)
-        return False
-    except requests.exceptions.RequestException as exc:
-        logger.error("Telegram request error: %s", exc)
-        return False
+    for cid in chat_ids:
+        payload = {
+            "chat_id": cid,
+            "text": message,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": True,
+        }
+        try:
+            response = requests.post(url, json=payload, timeout=15)
+            response.raise_for_status()
+            logger.info("Telegram alert sent to chat_id=%s", cid)
+            sent_any = True
+        except requests.exceptions.HTTPError as exc:
+            logger.error(
+                "Telegram HTTP error for chat_id=%s: %s — %s",
+                cid,
+                exc,
+                response.text,
+            )
+        except requests.exceptions.RequestException as exc:
+            logger.error("Telegram request error for chat_id=%s: %s", cid, exc)
+
+    return sent_any
 
 
 def send_prediction_alert(result: PredictionResult) -> bool:
