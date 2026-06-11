@@ -130,6 +130,46 @@ def get_latest_session(df: pd.DataFrame) -> pd.DataFrame:
     return session_df[session_df.index.date == latest_date]
 
 
+def get_scoring_session(
+    df: pd.DataFrame,
+    min_bars: int,
+) -> tuple[pd.DataFrame, Optional[datetime.date], bool]:
+    """
+    Pick intraday bars for scoring.
+
+    Prefers today's session when it has enough bars; otherwise uses the most
+    recent prior session with enough data (common right after market open).
+    """
+    session_all = filter_market_hours(df)
+    if session_all.empty:
+        return session_all, None, False
+
+    today = datetime.datetime.now(IST).date()
+    dates = sorted(set(session_all.index.date), reverse=True)
+
+    today_df = session_all[session_all.index.date == today]
+    if len(today_df) >= min_bars:
+        return today_df, today, False
+
+    for d in dates:
+        if d == today:
+            continue
+        day_df = session_all[session_all.index.date == d]
+        if len(day_df) >= min_bars:
+            return day_df, d, True
+
+    best_df = pd.DataFrame()
+    best_date: Optional[datetime.date] = None
+    for d in dates:
+        day_df = session_all[session_all.index.date == d]
+        if len(day_df) > len(best_df):
+            best_df = day_df
+            best_date = d
+
+    used_fallback = best_date is not None and best_date != today
+    return best_df, best_date, used_fallback
+
+
 def fetch_intraday_data(
     symbol: str,
     period: str = "5d",

@@ -67,6 +67,8 @@ class PredictionResult:
     symbols_failed: int = 0
     mode: str = "daily"       # "daily" or "intraday"
     interval: str = "1d"      # "1d", "5m", or "15m"
+    intraday_session_date: Optional[str] = None   # YYYY-MM-DD bars used for scoring
+    intraday_session_fallback: bool = False       # True when not using today's session
 
 
 # ---------------------------------------------------------------------------

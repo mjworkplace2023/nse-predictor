@@ -495,11 +495,11 @@ def _run_prediction(intraday: bool, interval: str, n: int) -> PredictionResult:
 
 def _dispatch_alerts(res: PredictionResult, telegram: bool) -> None:
     if telegram:
-        ok = send_prediction_alert(res)
+        ok, detail = send_prediction_alert(res)
         if ok:
             st.success("✅ Telegram alert sent!")
         else:
-            st.warning("⚠️ Telegram alert failed — check credentials in .env")
+            st.warning(f"⚠️ Telegram alert failed — {detail}")
 
 
 if run_button:
@@ -586,6 +586,17 @@ st.subheader(f"Results — {result.run_timestamp}")
 if result.mode == "intraday" or show_intraday_ui:
     interval_label = getattr(result, "interval", intraday_interval)
     st.caption(f"Intraday mode · {interval_label} candles · same-day trading signals")
+    if getattr(result, "intraday_session_fallback", False) and result.intraday_session_date:
+        st.info(
+            f"Market just opened — using **{result.intraday_session_date}** session data "
+            f"until enough {interval_label} bars accumulate today (need ~2 hours of trading)."
+        )
+    elif result.symbols_processed == 0:
+        st.warning(
+            "No intraday scores yet. This usually happens right after market open "
+            "(before enough 15-min candles exist) or when Yahoo Finance returns no data. "
+            "Try again after **11:00 IST**, or check market hours."
+        )
 else:
     st.caption("Daily swing mode · end-of-day data · multi-day outlook")
 
@@ -669,7 +680,15 @@ with tab_overview:
     )
 
     if df_all.empty:
-        st.warning("No stock data to display. Click **Run Prediction Now** to refresh.")
+        st.warning(
+            "No stock data to display. "
+            + (
+                "Intraday needs enough 15-min candles — try after 11:00 IST, "
+                "or wait for the session fallback banner above."
+                if show_intraday_ui
+                else "Click **Run Prediction Now** to refresh."
+            )
+        )
     else:
         mom_cols = _columns_in(
             df_all,

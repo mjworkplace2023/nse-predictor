@@ -100,11 +100,11 @@ def run_prediction_job(top_n: int = 5, send_alert: bool = True, intraday: bool =
     # Send Telegram alert
     if send_alert:
         logger.info("Sending Telegram alert...")
-        ok = send_prediction_alert(result)
+        ok, detail = send_prediction_alert(result)
         if ok:
             logger.info("Telegram alert delivered.")
         else:
-            logger.warning("Telegram alert not delivered (check credentials).")
+            logger.warning("Telegram alert not delivered: %s", detail)
     else:
         logger.info("Telegram alert skipped (--no-alert flag).")
 

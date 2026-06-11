@@ -167,9 +167,24 @@ def build_message(result: PredictionResult) -> str:
 # Sender
 # ---------------------------------------------------------------------------
 
+def _config_value(key: str) -> str:
+    """Read config from env or Streamlit Cloud secrets."""
+    value = os.getenv(key, "").strip()
+    if value:
+        return value
+    try:
+        import streamlit as st
+
+        if key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _parse_chat_ids(chat_id: Optional[str] = None) -> list[str]:
     """Return one or more chat IDs (comma-separated in TELEGRAM_CHAT_ID)."""
-    raw = chat_id or os.getenv("TELEGRAM_CHAT_ID", "")
+    raw = chat_id or _config_value("TELEGRAM_CHAT_ID")
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
@@ -178,27 +193,26 @@ def send_telegram_message(
     bot_token: Optional[str] = None,
     chat_id: Optional[str] = None,
     parse_mode: str = "Markdown",
-) -> bool:
+) -> tuple[bool, str]:
     """
     Send a plain text message to one or more Telegram chats.
 
     TELEGRAM_CHAT_ID may be a single ID or comma-separated list, e.g.
     ``-1001234567890,5966698118`` (group + personal).
 
-    Returns True if at least one send succeeds.
+    Returns (success, detail_message).
     """
-    token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN", "")
+    token = (bot_token or _config_value("TELEGRAM_BOT_TOKEN")).strip()
     chat_ids = _parse_chat_ids(chat_id)
 
-    if not token or not chat_ids:
-        logger.warning(
-            "Telegram credentials not configured. "
-            "Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env"
-        )
-        return False
+    if not token:
+        return False, "TELEGRAM_BOT_TOKEN is missing (.env or Streamlit secrets)."
+    if not chat_ids:
+        return False, "TELEGRAM_CHAT_ID is missing (.env or Streamlit secrets)."
 
     url = TELEGRAM_API_BASE.format(token=token)
     sent_any = False
+    errors: list[str] = []
 
     for cid in chat_ids:
         payload = {
@@ -209,32 +223,44 @@ def send_telegram_message(
         }
         try:
             response = requests.post(url, json=payload, timeout=15)
+            if not response.ok and parse_mode:
+                err_text = response.text
+                if "can't parse" in err_text.lower() or "parse entities" in err_text.lower():
+                    plain_payload = {k: v for k, v in payload.items() if k != "parse_mode"}
+                    response = requests.post(url, json=plain_payload, timeout=15)
             response.raise_for_status()
             logger.info("Telegram alert sent to chat_id=%s", cid)
             sent_any = True
-        except requests.exceptions.HTTPError as exc:
-            logger.error(
-                "Telegram HTTP error for chat_id=%s: %s — %s",
-                cid,
-                exc,
-                response.text,
-            )
+        except requests.exceptions.HTTPError:
+            try:
+                detail = response.json().get("description", response.text)
+            except Exception:
+                detail = response.text
+            msg = f"chat_id {cid}: {detail}"
+            logger.error("Telegram HTTP error — %s", msg)
+            errors.append(msg)
         except requests.exceptions.RequestException as exc:
-            logger.error("Telegram request error for chat_id=%s: %s", cid, exc)
+            msg = f"chat_id {cid}: {exc}"
+            logger.error("Telegram request error — %s", msg)
+            errors.append(msg)
 
-    return sent_any
+    if sent_any:
+        return True, "Telegram alert sent."
+    if errors:
+        return False, errors[0]
+    return False, "Telegram send failed for all chat IDs."
 
 
-def send_prediction_alert(result: PredictionResult) -> bool:
+def send_prediction_alert(result: PredictionResult) -> tuple[bool, str]:
     """
     Build and send the prediction result as a Telegram message.
 
     Respects ENABLE_TELEGRAM env var (default: true).
     """
-    enabled = os.getenv("ENABLE_TELEGRAM", "true").lower()
-    if enabled == "false":
+    enabled = _config_value("ENABLE_TELEGRAM") or "true"
+    if enabled.lower() == "false":
         logger.info("Telegram alerts disabled via ENABLE_TELEGRAM=false")
-        return False
+        return False, "Telegram alerts are disabled (ENABLE_TELEGRAM=false)."
 
     message = build_message(result)
     logger.debug("Telegram message:\n%s", message)

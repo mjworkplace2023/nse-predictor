@@ -26,7 +26,7 @@ from predictor.fetch_data import (
     get_change_since_open,
     get_intraday_change_pct,
     get_latest_price,
-    get_latest_session,
+    get_scoring_session,
 )
 from predictor.market_hours import IST
 from predictor.scorer import PredictionResult, StockScore, label_signal
@@ -331,15 +331,27 @@ def run_intraday_prediction(
 
     logger.info("Step 3/3: Computing intraday scores...")
     all_scores: List[StockScore] = []
+    session_date_used: Optional[str] = None
+    session_fallback = False
 
     for symbol in successful_symbols:
         df = stock_data[symbol]
-        session_df = get_latest_session(df)
+        session_df, session_date, used_fallback = get_scoring_session(
+            df, cfg.min_session_bars
+        )
 
         if session_df.empty or len(session_df) < cfg.min_session_bars:
             logger.warning("Insufficient intraday bars for %s — skipping", symbol)
             failed_count += 1
             continue
+
+        if session_date is not None:
+            date_str = session_date.isoformat()
+            if session_date_used is None:
+                session_date_used = date_str
+                session_fallback = used_fallback
+            elif used_fallback and not session_fallback:
+                session_fallback = True
 
         try:
             tech = compute_intraday_technical_score(df, session_df, cfg)
@@ -392,6 +404,8 @@ def run_intraday_prediction(
         symbols_failed=failed_count,
         mode="intraday",
         interval=cfg.interval,
+        intraday_session_date=session_date_used,
+        intraday_session_fallback=session_fallback,
     )
 
     logger.info(
