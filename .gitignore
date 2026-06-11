@@ -37,7 +37,8 @@ logs/
 *.csv
 cache/
 
-data/dashboard_users.json
+# User access backup (auto-generated)
+data/dashboard_users.json.bak
 
 # Streamlit
 .streamlit/secrets.toml

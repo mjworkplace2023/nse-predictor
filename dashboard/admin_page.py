@@ -7,6 +7,7 @@ from dashboard.user_store import (
     get_admins,
     list_allowed_emails,
     remove_allowed_email,
+    store_path,
 )
 
 
@@ -59,3 +60,4 @@ def render_admin_page() -> None:
         f"{len(allowed)} authorized · {len(admins)} admin(s). "
         "Admin accounts cannot be removed from this page."
     )
+    st.caption(f"Saved to: `{store_path()}`")

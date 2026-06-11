@@ -362,6 +362,13 @@ st.markdown(
         text-transform: uppercase;
         margin: 0.2rem 0 0 0;
     }
+    .brand-credit {
+        text-align: center !important;
+        font-size: 0.75rem !important;
+        color: #78909c !important;
+        margin: 0.1rem 0 0 0 !important;
+        letter-spacing: 0.02em;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -375,6 +382,10 @@ with _logo_col:
         st.markdown(
             '<p class="home-brand-main">Butterfly</p>'
             '<p class="home-brand-sub">Investment</p>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<p class="brand-credit">Created By : MJ Workplace</p>',
             unsafe_allow_html=True,
         )
 with _title_col:

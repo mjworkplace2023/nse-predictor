@@ -251,6 +251,14 @@ def _init_login_state() -> None:
     st.session_state.setdefault("otp_sent", False)
 
 
+def _render_brand_credit() -> None:
+    st.markdown(
+        '<p style="text-align:center;font-size:0.75rem;color:#78909c;'
+        'margin:-0.5rem 0 0.75rem 0;">Created By : MJ Workplace</p>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_login_page() -> None:
     _init_login_state()
 
@@ -268,6 +276,10 @@ def _render_login_page() -> None:
         }
         [data-testid="stImage"] { text-align: center; margin-bottom: 0.5rem; }
         [data-testid="stImage"] img { max-height: 176px; width: auto; margin: 0 auto; }
+        .brand-credit {
+            text-align: center; font-size: 0.75rem !important; color: #78909c !important;
+            margin: -0.5rem 0 0.75rem 0 !important; letter-spacing: 0.02em;
+        }
         .login-brand-sub {
             text-align: center; color: #78909c; letter-spacing: 0.22em;
             font-size: 1rem; margin: 0.25rem 0 1.5rem 0; text-transform: uppercase;
@@ -312,6 +324,7 @@ def _render_login_page() -> None:
                     "🦋 Butterfly Investment</h3>",
                     unsafe_allow_html=True,
                 )
+                _render_brand_credit()
 
             st.markdown(
                 '<p class="login-brand-sub">NSE Stock Predictor</p>'
