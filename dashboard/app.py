@@ -89,10 +89,12 @@ DAILY_COLUMN_GUIDE = pd.DataFrame([
     {"Column": "RSI", "Meaning": "14-day momentum; below 30 = oversold, above 70 = overbought"},
     {"Column": "News Count", "Meaning": "Number of news headlines matched to this stock"},
     {"Column": "Action", "Meaning": "LONG = swing buy setup, SHORT = swing sell setup, WAIT = no clear trade"},
-    {"Column": "Entry Range", "Meaning": "Suggested buy/sell zone based on 20-day structure (₹ low – ₹ high)"},
-    {"Column": "Target", "Meaning": "Swing profit target from daily ATR + 20-day high/low"},
+    {"Column": "Entry Range", "Meaning": "Suggested buy/sell zone from recent price structure (₹ low – ₹ high)"},
+    {"Column": "Target 1W", "Meaning": "~1 week (5 trading days) profit target from daily ATR + recent highs/lows"},
+    {"Column": "Target 15D", "Meaning": "~15 trading day swing profit target"},
+    {"Column": "Target 30D", "Meaning": "~30 trading day swing profit target"},
     {"Column": "Stop Loss", "Meaning": "Suggested exit if trade goes wrong — limits loss"},
-    {"Column": "R:R", "Meaning": "Risk-to-reward ratio (reward ÷ risk). Above 1.5 is healthier"},
+    {"Column": "R:R", "Meaning": "Risk-to-reward vs 15-day target (reward ÷ risk). Above 1.5 is healthier"},
 ])
 
 INTRADAY_COLUMN_GUIDE = pd.DataFrame([
@@ -137,7 +139,10 @@ def _result_has_trade_levels(result: PredictionResult) -> bool:
     if result is None or not result.all_scores:
         return False
     sample = result.all_scores[0]
-    return getattr(sample, "target_price", None) is not None
+    return (
+        getattr(sample, "target_1w", None) is not None
+        or getattr(sample, "target_price", None) is not None
+    )
 
 
 def _build_leaderboard_dataframe(
@@ -153,7 +158,7 @@ def _build_leaderboard_dataframe(
         include_trade_levels=has_trade_levels,
     )
 
-    if "Target" in df.columns and "Intraday Target" not in df.columns:
+    if show_intraday_ui and "Target" in df.columns and "Intraday Target" not in df.columns:
         df = df.rename(columns={"Target": "Intraday Target"})
 
     if show_intraday_ui and not has_trade_levels:
@@ -179,7 +184,10 @@ def _leaderboard_column_config(df: pd.DataFrame) -> dict:
         config["Symbol"] = st.column_config.TextColumn("Symbol", pinned="left", width="small")
     if "Company" in df.columns:
         config["Company"] = st.column_config.TextColumn("Company", pinned="left", width="medium")
-    for col in ("Action", "Entry Range", "Target", "Intraday Target", "Stop Loss", "R:R"):
+    for col in (
+        "Action", "Entry Range", "Target 1W", "Target 15D", "Target 30D",
+        "Target", "Intraday Target", "Stop Loss", "R:R",
+    ):
         if col in df.columns:
             config[col] = st.column_config.TextColumn(col, width="medium")
     return config
@@ -189,6 +197,9 @@ _TRADE_LEVEL_FIELDS = (
     "trade_action",
     "entry_low",
     "entry_high",
+    "target_1w",
+    "target_15d",
+    "target_30d",
     "target_price",
     "stop_loss",
     "risk_reward",
@@ -326,9 +337,11 @@ def _render_daily_trade_levels_explainer() -> None:
             "Levels are **rule-based estimates** from 20-day price structure and daily ATR — "
             "for multi-day swing holds, not same-day trades.\n\n"
             "- **Entry Range** — pullback zone toward recent support (LONG) or rally zone (SHORT)\n"
-            "- **Target** — profit level using 2.5× daily ATR and 20-day high/low\n"
-            "- **Stop Loss** — exit if wrong, below 20-day low (LONG) or above 20-day high (SHORT)\n"
-            "- **R:R** — reward ÷ risk; above 1.5 is healthier\n\n"
+            "- **Target 1W** — ~5 trading day target (1.2× daily ATR + recent high/low)\n"
+            "- **Target 15D** — ~15 trading day swing target (2.0× ATR)\n"
+            "- **Target 30D** — ~30 trading day swing target (2.8× ATR)\n"
+            "- **Stop Loss** — exit if wrong, below recent support (LONG) or above resistance (SHORT)\n"
+            "- **R:R** — reward ÷ risk using the 15-day target\n\n"
             "_Re-run prediction to refresh levels after market moves._"
         )
 
@@ -468,7 +481,7 @@ if is_intraday:
     )
 else:
     st.sidebar.info(
-        "Daily swing mode — leaderboard includes Action, Entry Range, Target, Stop Loss"
+        "Daily swing mode — leaderboard includes Action, Entry Range, Target 1W / 15D / 30D, Stop Loss"
     )
 
 auto_refresh = st.sidebar.checkbox(
@@ -788,6 +801,9 @@ with tab_overview:
                 "5D %": "{:+.2f}%",
                 "20D %": "{:+.2f}%",
                 "Intraday Target": "₹{:,.2f}",
+                "Target 1W": "₹{:,.2f}",
+                "Target 15D": "₹{:,.2f}",
+                "Target 30D": "₹{:,.2f}",
                 "Target": "₹{:,.2f}",
                 "Stop Loss": "₹{:,.2f}",
                 "R:R": "{:.1f}",

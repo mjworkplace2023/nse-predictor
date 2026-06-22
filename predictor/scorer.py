@@ -52,7 +52,10 @@ class StockScore:
     trade_action: Optional[str] = None   # "LONG", "SHORT", "WAIT" (intraday only)
     entry_low: Optional[float] = None
     entry_high: Optional[float] = None
-    target_price: Optional[float] = None
+    target_1w: Optional[float] = None       # swing ~1 week (5 trading days)
+    target_15d: Optional[float] = None
+    target_30d: Optional[float] = None
+    target_price: Optional[float] = None    # intraday same-day target
     stop_loss: Optional[float] = None
     risk_reward: Optional[float] = None
 
@@ -212,6 +215,9 @@ def run_prediction(
                 trade_action=levels["trade_action"],
                 entry_low=levels["entry_low"],
                 entry_high=levels["entry_high"],
+                target_1w=levels["target_1w"],
+                target_15d=levels["target_15d"],
+                target_30d=levels["target_30d"],
                 target_price=levels["target_price"],
                 stop_loss=levels["stop_loss"],
                 risk_reward=levels["risk_reward"],
@@ -327,7 +333,9 @@ def result_to_dataframe(
                 "Entry Range": format_entry_range(
                     getattr(s, "entry_low", None), getattr(s, "entry_high", None)
                 ),
-                "Target": getattr(s, "target_price", None),
+                "Target 1W": getattr(s, "target_1w", None),
+                "Target 15D": getattr(s, "target_15d", None),
+                "Target 30D": getattr(s, "target_30d", None),
                 "Stop Loss": getattr(s, "stop_loss", None),
                 "R:R": getattr(s, "risk_reward", None),
             })
@@ -346,7 +354,7 @@ def result_to_dataframe(
     elif not intraday and not df.empty:
         col_order = [
             "Symbol", "Company", "Price (INR)", "Score", "Signal", "Action",
-            "Entry Range", "Target", "Stop Loss", "R:R",
+            "Entry Range", "Target 1W", "Target 15D", "Target 30D", "Stop Loss", "R:R",
             "Technical", "Sentiment", "Momentum",
             "1D %", "5D %", "20D %",
             "RSI", "News Count",
