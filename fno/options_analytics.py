@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from fno.config import PCR_BEARISH, PCR_BULLISH
+from fno.formatting import parse_expiry, round_index
 
 
 @dataclass
@@ -22,6 +23,9 @@ class OptionsSnapshot:
     pe_oi_top_strike: float
     signal: str
     notes: str
+    expiry_date: Optional[str] = None
+    expiry_day: Optional[str] = None
+    days_to_expiry: Optional[int] = None
 
 
 def compute_pcr(chain_df: pd.DataFrame) -> float:
@@ -84,6 +88,8 @@ def analyze_options(payload: dict, symbol: str = "NIFTY") -> Optional[OptionsSna
     max_pain = compute_max_pain(chain_df, spot)
     iv_skew = compute_iv_skew(chain_df, spot)
     ce_strike, pe_strike = oi_buildup_levels(chain_df)
+    expiry_raw = payload.get("expiry")
+    expiry_date, expiry_day, days_to_expiry = parse_expiry(expiry_raw)
 
     notes = []
     signal = "NEUTRAL"
@@ -105,16 +111,23 @@ def analyze_options(payload: dict, symbol: str = "NIFTY") -> Optional[OptionsSna
     elif iv_skew < -2:
         notes.append(f"IV skew {iv_skew:.1f} — call-side greed")
 
-    notes.append(f"OI resistance CE @ {ce_strike:.0f}, support PE @ {pe_strike:.0f}")
+    if expiry_date and expiry_day:
+        dte = f"{days_to_expiry} day(s)" if days_to_expiry is not None else "—"
+        notes.insert(0, f"Expiry {expiry_date} ({expiry_day}), {dte} to expiry")
+
+    notes.append(f"OI resistance CE @ {int(round(ce_strike))}, support PE @ {int(round(pe_strike))}")
 
     return OptionsSnapshot(
         symbol=symbol,
         spot=spot,
         pcr=round(pcr, 2),
-        max_pain=round(max_pain, 2),
+        max_pain=round_index(max_pain) or 0,
         iv_skew=round(iv_skew, 2),
         ce_oi_top_strike=ce_strike,
         pe_oi_top_strike=pe_strike,
         signal=signal,
         notes="; ".join(notes),
+        expiry_date=expiry_date,
+        expiry_day=expiry_day,
+        days_to_expiry=days_to_expiry,
     )

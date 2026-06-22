@@ -16,6 +16,7 @@ from fno.data_fetch import fetch_intraday_bars, fetch_options_chain
 from fno.features import build_features, latest_feature_row
 from fno.labels import add_intraday_labels
 from fno.models import FnoModelBundle, lstm_available, train_models
+from fno.formatting import round_index
 from fno.options_analytics import OptionsSnapshot, analyze_options
 from predictor.trade_levels import compute_intraday_trade_levels
 
@@ -26,20 +27,23 @@ IST = pytz.timezone("Asia/Kolkata")
 @dataclass
 class FnoPredictionResult:
     symbol: str
-    price: float
+    price: int
     ml_signal: str
     ml_confidence: float
     options_signal: str
     combined_signal: str
     trade_action: str
-    entry_low: Optional[float] = None
-    entry_high: Optional[float] = None
-    target_price: Optional[float] = None
-    stop_loss: Optional[float] = None
+    entry_low: Optional[int] = None
+    entry_high: Optional[int] = None
+    target_price: Optional[int] = None
+    stop_loss: Optional[int] = None
     risk_reward: Optional[float] = None
     pcr: Optional[float] = None
-    max_pain: Optional[float] = None
+    max_pain: Optional[int] = None
     iv_skew: Optional[float] = None
+    expiry_date: Optional[str] = None
+    expiry_day: Optional[str] = None
+    days_to_expiry: Optional[int] = None
     model_accuracy: float = 0.0
     lstm_available: bool = False
     notes: str = ""
@@ -150,20 +154,23 @@ def predict_index(
 
     return FnoPredictionResult(
         symbol=index.name,
-        price=round(price, 2),
+        price=round_index(price) or 0,
         ml_signal=ml_signal,
         ml_confidence=round(ml_conf, 3),
         options_signal=opt_signal,
         combined_signal=combined,
         trade_action=levels.get("trade_action", "WAIT"),
-        entry_low=levels.get("entry_low"),
-        entry_high=levels.get("entry_high"),
-        target_price=levels.get("target_price"),
-        stop_loss=levels.get("stop_loss"),
+        entry_low=round_index(levels.get("entry_low")),
+        entry_high=round_index(levels.get("entry_high")),
+        target_price=round_index(levels.get("target_price")),
+        stop_loss=round_index(levels.get("stop_loss")),
         risk_reward=levels.get("risk_reward"),
         pcr=options_snap.pcr if options_snap else None,
-        max_pain=options_snap.max_pain if options_snap else None,
+        max_pain=round_index(options_snap.max_pain) if options_snap else None,
         iv_skew=options_snap.iv_skew if options_snap else None,
+        expiry_date=options_snap.expiry_date if options_snap else None,
+        expiry_day=options_snap.expiry_day if options_snap else None,
+        days_to_expiry=options_snap.days_to_expiry if options_snap else None,
         model_accuracy=round(bundle.train_accuracy, 3),
         lstm_available=lstm_available(),
         notes=" | ".join(notes),
@@ -219,10 +226,15 @@ def results_to_dataframe(results: List[FnoPredictionResult]) -> pd.DataFrame:
         return pd.DataFrame()
     rows = []
     for r in results:
+        expiry_label = "—"
+        if r.expiry_date and r.expiry_day:
+            dte = f"{r.days_to_expiry}d" if r.days_to_expiry is not None else "—"
+            expiry_label = f"{r.expiry_date} ({r.expiry_day}, {dte})"
         rows.append(
             {
                 "Index": r.symbol,
                 "Price": r.price,
+                "Expiry": expiry_label,
                 "ML Signal": r.ml_signal,
                 "ML Conf": f"{r.ml_confidence:.0%}",
                 "Options": r.options_signal,

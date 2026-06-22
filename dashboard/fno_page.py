@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import streamlit as st
 import plotly.graph_objects as go
+import pandas as pd
 
 from fno.config import FNO_INDICES, PCR_BEARISH, PCR_BULLISH
+from fno.formatting import format_index
 from fno.models import lstm_available
 from fno.predictor import run_fno_intraday_prediction, results_to_dataframe
 
@@ -91,6 +93,11 @@ def render_fno_page() -> None:
         return f"color: {_signal_color(val)}; font-weight: 600"
 
     styled = df.style.map(_style_signal, subset=["Signal", "ML Signal", "Options"])
+    # Index prices and levels — whole numbers only
+    int_cols = ["Price", "Entry Low", "Entry High", "Target", "Stop Loss", "Max Pain"]
+    for col in int_cols:
+        if col in df.columns:
+            styled = styled.format({col: lambda v: "—" if pd.isna(v) else f"{int(v):,}"})
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
     st.markdown("---")
@@ -110,7 +117,10 @@ def render_fno_page() -> None:
 
     with st.expander("Detailed notes per index"):
         for r in results:
-            st.markdown(f"**{r.symbol}** — {r.combined_signal} @ {r.price:,.2f}")
+            st.markdown(f"**{r.symbol}** — {r.combined_signal} @ {format_index(r.price)}")
+            if r.expiry_date and r.expiry_day:
+                dte = f"{r.days_to_expiry} day(s) away" if r.days_to_expiry is not None else ""
+                st.caption(f"Options expiry: **{r.expiry_date}** ({r.expiry_day}) {dte}")
             st.caption(r.notes)
 
     if st.session_state.get("fno_options_on"):
@@ -118,8 +128,12 @@ def render_fno_page() -> None:
         st.subheader("Options snapshot")
         for r in results:
             st.markdown(f"**{r.symbol}**")
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("PCR", f"{r.pcr:.2f}" if r.pcr is not None else "—")
-            c2.metric("Max Pain", f"{r.max_pain:,.0f}" if r.max_pain else "—")
-            c3.metric("IV Skew", f"{r.iv_skew:.2f}" if r.iv_skew is not None else "—")
-            c4.metric("Options bias", r.options_signal)
+            if r.expiry_date and r.expiry_day:
+                dte_text = f"{r.days_to_expiry} days to expiry" if r.days_to_expiry is not None else ""
+                st.caption(f"Expiry: **{r.expiry_date}** · **{r.expiry_day}** · {dte_text}")
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Spot", format_index(r.price))
+            c2.metric("PCR", f"{r.pcr:.2f}" if r.pcr is not None else "—")
+            c3.metric("Max Pain", format_index(r.max_pain))
+            c4.metric("IV Skew", f"{r.iv_skew:.2f}" if r.iv_skew is not None else "—")
+            c5.metric("Options bias", r.options_signal)

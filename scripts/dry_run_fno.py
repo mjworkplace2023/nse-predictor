@@ -35,11 +35,13 @@ def main() -> int:
 
     for r in results:
         print(f"--- {r.symbol} ---")
-        print(f"  Price: {r.price:,.2f}")
+        print(f"  Price: {r.price:,}")
+        if r.expiry_date and r.expiry_day:
+            print(f"  Expiry: {r.expiry_date} ({r.expiry_day}), {r.days_to_expiry} day(s) to expiry")
         print(f"  ML: {r.ml_signal} ({r.ml_confidence:.0%}) | Options: {r.options_signal}")
         print(f"  Combined: {r.combined_signal} | Action: {r.trade_action}")
         if r.target_price:
-            print(f"  Target: {r.target_price:,.2f} | SL: {r.stop_loss:,.2f} | R:R {r.risk_reward}")
+            print(f"  Target: {r.target_price:,} | SL: {r.stop_loss:,} | R:R {r.risk_reward}")
         print(f"  Model accuracy (hold-out): {r.model_accuracy:.0%}")
         print(f"  Notes: {r.notes}")
         print()
