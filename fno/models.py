@@ -12,7 +12,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
 
-from fno.config import RANDOM_STATE, TRAIN_TEST_SPLIT
+from fno.config import RANDOM_STATE, TRAIN_TEST_SPLIT, FAST_TRAIN_MAX_ROWS
 from fno.features import FEATURE_COLUMNS
 from fno.labels import LABEL_MAP
 
@@ -32,10 +32,9 @@ class FnoModelBundle:
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         cols = [c for c in self.feature_columns if c in X.columns]
         x = self.scaler.transform(X[cols])
-        if self.ensemble is not None:
-            return self.ensemble.predict_proba(x)[0]
-        if self.xgb_model is not None:
-            return self.xgb_model.predict_proba(x)[0]
+        clf = self.ensemble or self.xgb_model
+        if clf is not None:
+            return clf.predict_proba(x)[0]
         return np.array([0.33, 0.34, 0.33])
 
     def predict_label(self, X: pd.DataFrame) -> Tuple[str, float]:
@@ -50,11 +49,14 @@ def time_series_split(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     return df.iloc[:split_idx], df.iloc[split_idx:]
 
 
-def train_models(labeled_df: pd.DataFrame) -> FnoModelBundle:
-    """Train XGBoost + voting ensemble on time-series split data."""
+def train_models(labeled_df: pd.DataFrame, *, fast: bool = True) -> FnoModelBundle:
+    """Train classifiers on time-series split data."""
     bundle = FnoModelBundle()
     cols = [c for c in FEATURE_COLUMNS if c in labeled_df.columns]
     bundle.feature_columns = cols
+
+    if len(labeled_df) > FAST_TRAIN_MAX_ROWS:
+        labeled_df = labeled_df.tail(FAST_TRAIN_MAX_ROWS)
 
     train_df, test_df = time_series_split(labeled_df)
     if len(train_df) < 50 or len(test_df) < 10:
@@ -69,6 +71,19 @@ def train_models(labeled_df: pd.DataFrame) -> FnoModelBundle:
     bundle.scaler.fit(X_train)
     X_train_s = bundle.scaler.transform(X_train)
     X_test_s = bundle.scaler.transform(X_test)
+
+    if fast:
+        rf = RandomForestClassifier(
+            n_estimators=40,
+            max_depth=6,
+            min_samples_leaf=4,
+            n_jobs=-1,
+            random_state=RANDOM_STATE,
+        )
+        rf.fit(X_train_s, y_train)
+        bundle.ensemble = rf
+        bundle.train_accuracy = float(accuracy_score(y_test, rf.predict(X_test_s)))
+        return bundle
 
     estimators = []
 

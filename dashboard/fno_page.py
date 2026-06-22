@@ -9,6 +9,13 @@ from fno.config import FNO_INDICES, PCR_BEARISH, PCR_BULLISH
 from fno.models import lstm_available
 from fno.predictor import run_fno_intraday_prediction, results_to_dataframe
 
+_CACHE_TTL_SEC = 300  # 5 min — avoids re-training on every click
+
+
+@st.cache_data(ttl=_CACHE_TTL_SEC, show_spinner=False)
+def _cached_fno_prediction(include_options: bool):
+    return run_fno_intraday_prediction(include_options=include_options)
+
 
 def _signal_color(signal: str) -> str:
     return {"BUY": "#16a34a", "SELL": "#dc2626", "HOLD": "#ca8a04"}.get(signal, "#6b7280")
@@ -39,26 +46,31 @@ def render_fno_page() -> None:
 
     st.markdown(
         f"**Indices:** {index_names} · "
-        f"**Options rules:** PCR > {PCR_BULLISH} bullish · PCR < {PCR_BEARISH} bearish · "
-        "Max pain pull · IV skew · OI buildup"
+        f"**Options (NSE):** Nifty 50 & Bank Nifty · "
+        f"**Options rules:** PCR > {PCR_BULLISH} bullish · PCR < {PCR_BEARISH} bearish"
     )
+    st.caption("Results cached 5 min. Sensex uses ML only (options chain is on BSE).")
 
-    if st.button("🔄 Run F&O prediction", type="primary", use_container_width=True):
-        with st.spinner("Fetching index data & training models for Nifty, Bank Nifty, Sensex…"):
-            results = run_fno_intraday_prediction(include_options=include_options)
+    force_refresh = st.button("🔄 Run F&O prediction", type="primary", use_container_width=True)
+
+    if force_refresh:
+        _cached_fno_prediction.clear()
+        with st.spinner("Fetching index data & options (usually 15–30 sec)…"):
+            results = _cached_fno_prediction(include_options=include_options)
             st.session_state["fno_results"] = results
             st.session_state["fno_options_on"] = include_options
 
     results = st.session_state.get("fno_results", [])
+
     if not results:
         st.info("Click **Run F&O prediction** to scan Nifty 50, Bank Nifty, and Sensex.")
         st.markdown("#### Pipeline")
         st.markdown(
-            "1. **Data** — yfinance OHLCV (15m/1h/1d) for each index\n"
-            "2. **Options** — nsepython chain per index (NIFTY / BANKNIFTY / SENSEX)\n"
-            "3. **Features** — EMA, MACD, RSI, Stochastic, BB, ATR, OBV, VWAP, volume\n"
+            "1. **Data** — yfinance 15m OHLCV (parallel fetch)\n"
+            "2. **Options** — NSE v3 API for NIFTY & BANKNIFTY (PCR, max pain, IV skew)\n"
+            "3. **Features** — EMA, MACD, RSI, Stochastic, BB, ATR, OBV, VWAP\n"
             "4. **Labels** — BUY/HOLD/SELL from forward 15m returns (±0.5%)\n"
-            "5. **Models** — XGBoost + LightGBM + RF + LR ensemble (time-series split)\n"
+            "5. **Models** — fast Random Forest (time-series split)\n"
             "6. **Levels** — Entry range, target, stop-loss from session VWAP + ATR"
         )
         return
@@ -66,6 +78,14 @@ def render_fno_page() -> None:
     df = results_to_dataframe(results)
     st.subheader("F&O Intraday — Index Signals")
     st.caption(f"As of {results[0].as_of}")
+
+    options_ok = sum(1 for r in results if r.pcr is not None)
+    if include_options and options_ok < 2:
+        st.warning(
+            "Options chain loaded for "
+            f"{options_ok}/2 NSE indices. "
+            "During off-market hours or if NSE blocks the server IP, only ML signals are shown."
+        )
 
     def _style_signal(val: str) -> str:
         return f"color: {_signal_color(val)}; font-weight: 600"

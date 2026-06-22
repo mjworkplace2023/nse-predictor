@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 import pytz
 
 from fno.config import FNO_INDICES, FnoIndex
-from fno.data_fetch import fetch_multi_interval, fetch_options_chain
+from fno.data_fetch import fetch_intraday_bars, fetch_options_chain
 from fno.features import build_features, latest_feature_row
 from fno.labels import add_intraday_labels
 from fno.models import FnoModelBundle, lstm_available, train_models
@@ -74,13 +75,44 @@ def _ml_to_trade_signal(ml_signal: str) -> str:
     return {"BUY": "BUY", "SELL": "SELL", "HOLD": "NEUTRAL"}.get(ml_signal, "NEUTRAL")
 
 
+def _fetch_options_snapshots(
+    indices: List[FnoIndex],
+    include_options: bool,
+) -> Dict[str, Optional[OptionsSnapshot]]:
+    if not include_options:
+        return {}
+
+    to_fetch = [i for i in indices if i.nse_options]
+    snapshots: Dict[str, Optional[OptionsSnapshot]] = {}
+
+    # Pre-mark indices without NSE options chain
+    for index in indices:
+        if not index.nse_options:
+            snapshots[index.name] = None
+
+    def _load(index: FnoIndex) -> tuple[str, Optional[OptionsSnapshot]]:
+        payload = fetch_options_chain(index.option_symbol)
+        if not payload:
+            return index.name, None
+        return index.name, analyze_options(payload, index.option_symbol)
+
+    with ThreadPoolExecutor(max_workers=len(to_fetch) or 1) as pool:
+        futures = {pool.submit(_load, idx): idx for idx in to_fetch}
+        for fut in as_completed(futures):
+            name, snap = fut.result()
+            snapshots[name] = snap
+
+    return snapshots
+
+
 def predict_index(
     index: FnoIndex,
     options_snap: Optional[OptionsSnapshot] = None,
+    df_15m: Optional[pd.DataFrame] = None,
 ) -> Optional[FnoPredictionResult]:
     """Run full F&O intraday pipeline for one index."""
-    bars = fetch_multi_interval(index.yf_symbol)
-    df_15m = bars.get("15m")
+    if df_15m is None:
+        df_15m = fetch_intraday_bars(index.yf_symbol)
     if df_15m is None or len(df_15m) < 80:
         logger.warning("Insufficient 15m data for %s", index.name)
         return None
@@ -90,7 +122,7 @@ def predict_index(
         return None
 
     labeled = add_intraday_labels(feature_df)
-    bundle: FnoModelBundle = train_models(labeled)
+    bundle: FnoModelBundle = train_models(labeled, fast=True)
 
     latest = latest_feature_row(feature_df).to_frame().T
     ml_signal, ml_conf = bundle.predict_label(latest)
@@ -110,9 +142,11 @@ def predict_index(
     notes = []
     if options_snap:
         notes.append(options_snap.notes)
+    elif not index.nse_options:
+        notes.append("Sensex options on BSE — NSE chain not used; ML signal only")
     else:
         notes.append("Options chain unavailable — ML signal only")
-    notes.append(f"ML {ml_signal} ({ml_conf:.0%} conf), ensemble acc {bundle.train_accuracy:.0%}")
+    notes.append(f"ML {ml_signal} ({ml_conf:.0%} conf), model acc {bundle.train_accuracy:.0%}")
 
     return FnoPredictionResult(
         symbol=index.name,
@@ -144,17 +178,27 @@ def run_fno_intraday_prediction(
 ) -> List[FnoPredictionResult]:
     """Run F&O intraday predictions for Nifty 50, Bank Nifty, and Sensex."""
     targets = indices or FNO_INDICES
+    options_by_name = _fetch_options_snapshots(targets, include_options)
+
+    bars_by_symbol: Dict[str, Optional[pd.DataFrame]] = {}
+
+    def _load_bars(index: FnoIndex) -> tuple[str, Optional[pd.DataFrame]]:
+        return index.name, fetch_intraday_bars(index.yf_symbol)
+
+    with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+        bar_futures = [pool.submit(_load_bars, idx) for idx in targets]
+        for fut in as_completed(bar_futures):
+            name, df = fut.result()
+            bars_by_symbol[name] = df
+
     results: List[FnoPredictionResult] = []
-
     for index in targets:
-        options_snap: Optional[OptionsSnapshot] = None
-        if include_options:
-            payload = fetch_options_chain(index.option_symbol)
-            if payload:
-                options_snap = analyze_options(payload, index.option_symbol)
-
         try:
-            row = predict_index(index, options_snap)
+            row = predict_index(
+                index,
+                options_by_name.get(index.name),
+                bars_by_symbol.get(index.name),
+            )
             if row:
                 results.append(row)
         except Exception as exc:

@@ -13,14 +13,19 @@ class FnoIndex:
     name: str
     yf_symbol: str
     option_symbol: str
+    nse_options: bool = True  # False for Sensex (BSE-listed; NSE v3 has no chain)
 
 
 # Nifty 50, Bank Nifty, Sensex — only indices traded for F&O intraday
 FNO_INDICES: List[FnoIndex] = [
     FnoIndex(name="Nifty 50", yf_symbol="^NSEI", option_symbol="NIFTY"),
     FnoIndex(name="Bank Nifty", yf_symbol="^NSEBANK", option_symbol="BANKNIFTY"),
-    FnoIndex(name="Sensex", yf_symbol="^BSESN", option_symbol="SENSEX"),
+    FnoIndex(name="Sensex", yf_symbol="^BSESN", option_symbol="SENSEX", nse_options=False),
 ]
+
+# Data / performance
+INTRADAY_OHLCV_PERIOD = "30d"      # enough for indicators; faster than 60d
+FAST_TRAIN_MAX_ROWS = 400          # cap training rows for dashboard speed
 
 # Label thresholds (forward return)
 INTRADAY_FORWARD_BARS = 4          # ~1 hour on 15m chart

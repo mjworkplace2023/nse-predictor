@@ -74,7 +74,12 @@ def analyze_options(payload: dict, symbol: str = "NIFTY") -> Optional[OptionsSna
     if chain_df.empty:
         return None
 
-    spot = float(payload.get("underlyingValue", 0) or 0)
+    records = payload.get("records") or {}
+    spot = float(
+        payload.get("underlyingValue")
+        or records.get("underlyingValue")
+        or 0
+    )
     pcr = compute_pcr(chain_df)
     max_pain = compute_max_pain(chain_df, spot)
     iv_skew = compute_iv_skew(chain_df, spot)
