@@ -10,3 +10,7 @@ plotly
 python-dotenv
 pytz
 schedule
+xgboost
+lightgbm
+scikit-learn
+nsepython

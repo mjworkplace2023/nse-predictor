@@ -33,6 +33,7 @@ load_dotenv()
 
 from dashboard.auth import require_login, render_top_session_bar, current_user, LOGO_PATH
 from dashboard.admin_page import render_admin_page
+from dashboard.fno_page import render_fno_page
 from dashboard.user_store import is_admin
 
 from data.nifty50_symbols import NIFTY50_SYMBOLS, get_display_name
@@ -455,13 +456,17 @@ st.markdown("---")
 # ---------------------------------------------------------------------------
 st.sidebar.title("⚙️ Settings")
 
-_nav_options = ["📊 Predictor"]
+_nav_options = ["📊 Predictor", "📈 F&O Intraday"]
 if is_admin(current_user()):
     _nav_options.append("👤 Admin")
 _page = st.sidebar.radio("Page", _nav_options)
 
 if _page == "👤 Admin":
     render_admin_page()
+    st.stop()
+
+if _page == "📈 F&O Intraday":
+    render_fno_page()
     st.stop()
 
 prediction_mode = st.sidebar.radio(
