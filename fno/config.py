@@ -13,15 +13,20 @@ class FnoIndex:
     name: str
     yf_symbol: str
     option_symbol: str
+    strike_step: int = 50
     nse_options: bool = True  # False for Sensex (BSE-listed; NSE v3 has no chain)
 
 
 # Nifty 50, Bank Nifty, Sensex — only indices traded for F&O intraday
 FNO_INDICES: List[FnoIndex] = [
-    FnoIndex(name="Nifty 50", yf_symbol="^NSEI", option_symbol="NIFTY"),
-    FnoIndex(name="Bank Nifty", yf_symbol="^NSEBANK", option_symbol="BANKNIFTY"),
-    FnoIndex(name="Sensex", yf_symbol="^BSESN", option_symbol="SENSEX", nse_options=False),
+    FnoIndex(name="Nifty 50", yf_symbol="^NSEI", option_symbol="NIFTY", strike_step=50),
+    FnoIndex(name="Bank Nifty", yf_symbol="^NSEBANK", option_symbol="BANKNIFTY", strike_step=100),
+    FnoIndex(name="Sensex", yf_symbol="^BSESN", option_symbol="SENSEX", strike_step=100, nse_options=False),
 ]
+
+# Intraday option premium levels (from chain LTP)
+OPTION_TARGET_MULT = 1.5   # +50% on premium
+OPTION_SL_MULT = 0.65      # -35% on premium
 
 # Data / performance
 INTRADAY_OHLCV_PERIOD = "30d"      # enough for indicators; faster than 60d

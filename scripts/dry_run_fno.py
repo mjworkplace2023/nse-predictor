@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from fno.config import FNO_INDICES
+from fno.option_trades import option_trades_to_dataframe
 from fno.predictor import run_fno_intraday_prediction, results_to_dataframe
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -24,13 +25,17 @@ def main() -> int:
     print(f"Indices: {names}")
     print()
 
-    results = run_fno_intraday_prediction(include_options=True)
+    results, option_trades = run_fno_intraday_prediction(include_options=True)
     if not results:
         print("ERROR: No results — check network / yfinance / nsepython.")
         return 1
 
     df = results_to_dataframe(results)
     print(df.to_string(index=False))
+    print()
+    print("--- Intraday Option Strikes ---")
+    opt_df = option_trades_to_dataframe(option_trades)
+    print(opt_df.to_string(index=False))
     print()
 
     for r in results:

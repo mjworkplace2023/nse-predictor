@@ -6,7 +6,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import pytz
@@ -17,6 +17,7 @@ from fno.features import build_features, latest_feature_row
 from fno.labels import add_intraday_labels
 from fno.models import FnoModelBundle, lstm_available, train_models
 from fno.formatting import round_index
+from fno.option_trades import OptionTradeRecommendation, build_option_trades_from_results
 from fno.options_analytics import OptionsSnapshot, analyze_options
 from predictor.trade_levels import compute_intraday_trade_levels
 
@@ -82,31 +83,33 @@ def _ml_to_trade_signal(ml_signal: str) -> str:
 def _fetch_options_snapshots(
     indices: List[FnoIndex],
     include_options: bool,
-) -> Dict[str, Optional[OptionsSnapshot]]:
+) -> Tuple[Dict[str, Optional[OptionsSnapshot]], Dict[str, Optional[dict]]]:
     if not include_options:
-        return {}
+        return {}, {}
 
     to_fetch = [i for i in indices if i.nse_options]
     snapshots: Dict[str, Optional[OptionsSnapshot]] = {}
+    payloads: Dict[str, Optional[dict]] = {}
 
-    # Pre-mark indices without NSE options chain
     for index in indices:
         if not index.nse_options:
             snapshots[index.name] = None
+            payloads[index.name] = None
 
-    def _load(index: FnoIndex) -> tuple[str, Optional[OptionsSnapshot]]:
+    def _load(index: FnoIndex) -> tuple[str, Optional[OptionsSnapshot], Optional[dict]]:
         payload = fetch_options_chain(index.option_symbol)
         if not payload:
-            return index.name, None
-        return index.name, analyze_options(payload, index.option_symbol)
+            return index.name, None, None
+        return index.name, analyze_options(payload, index.option_symbol), payload
 
     with ThreadPoolExecutor(max_workers=len(to_fetch) or 1) as pool:
         futures = {pool.submit(_load, idx): idx for idx in to_fetch}
         for fut in as_completed(futures):
-            name, snap = fut.result()
+            name, snap, payload = fut.result()
             snapshots[name] = snap
+            payloads[name] = payload
 
-    return snapshots
+    return snapshots, payloads
 
 
 def predict_index(
@@ -182,10 +185,10 @@ def run_fno_intraday_prediction(
     indices: Optional[List[FnoIndex]] = None,
     *,
     include_options: bool = True,
-) -> List[FnoPredictionResult]:
+) -> Tuple[List[FnoPredictionResult], List[OptionTradeRecommendation]]:
     """Run F&O intraday predictions for Nifty 50, Bank Nifty, and Sensex."""
     targets = indices or FNO_INDICES
-    options_by_name = _fetch_options_snapshots(targets, include_options)
+    options_by_name, chain_payloads = _fetch_options_snapshots(targets, include_options)
 
     bars_by_symbol: Dict[str, Optional[pd.DataFrame]] = {}
 
@@ -218,7 +221,8 @@ def run_fno_intraday_prediction(
         ),
         reverse=True,
     )
-    return results
+    option_trades = build_option_trades_from_results(results, chain_payloads)
+    return results, option_trades
 
 
 def results_to_dataframe(results: List[FnoPredictionResult]) -> pd.DataFrame:

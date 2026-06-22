@@ -9,6 +9,7 @@ import pandas as pd
 from fno.config import FNO_INDICES, PCR_BEARISH, PCR_BULLISH
 from fno.formatting import format_index
 from fno.models import lstm_available
+from fno.option_trades import OptionTradeRecommendation, option_trades_to_dataframe
 from fno.predictor import run_fno_intraday_prediction, results_to_dataframe
 
 _CACHE_TTL_SEC = 300  # 5 min — avoids re-training on every click
@@ -21,6 +22,10 @@ def _cached_fno_prediction(include_options: bool):
 
 def _signal_color(signal: str) -> str:
     return {"BUY": "#16a34a", "SELL": "#dc2626", "HOLD": "#ca8a04"}.get(signal, "#6b7280")
+
+
+def _action_color(action: str) -> str:
+    return {"CALL": "#16a34a", "PUT": "#dc2626", "WAIT": "#6b7280"}.get(action, "#6b7280")
 
 
 def render_fno_page() -> None:
@@ -58,11 +63,13 @@ def render_fno_page() -> None:
     if force_refresh:
         _cached_fno_prediction.clear()
         with st.spinner("Fetching index data & options (usually 15–30 sec)…"):
-            results = _cached_fno_prediction(include_options=include_options)
+            results, option_trades = _cached_fno_prediction(include_options=include_options)
             st.session_state["fno_results"] = results
+            st.session_state["fno_option_trades"] = option_trades
             st.session_state["fno_options_on"] = include_options
 
     results = st.session_state.get("fno_results", [])
+    option_trades = st.session_state.get("fno_option_trades", [])
 
     if not results:
         st.info("Click **Run F&O prediction** to scan Nifty 50, Bank Nifty, and Sensex.")
@@ -99,6 +106,34 @@ def render_fno_page() -> None:
         if col in df.columns:
             styled = styled.format({col: lambda v: "—" if pd.isna(v) else f"{int(v):,}"})
     st.dataframe(styled, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.subheader("Intraday Option Chain — Strike Recommendations")
+    st.caption(
+        "CALL on BUY signal · PUT on SELL signal · Target/SL on option premium (LTP). "
+        "Sensex strike from spot (BSE chain not linked)."
+    )
+    if option_trades:
+        opt_df = option_trades_to_dataframe(option_trades)
+        opt_styled = opt_df.style.map(
+            lambda v: f"color: {_action_color(v)}; font-weight: 600",
+            subset=["Action"],
+        )
+        for col in ["Strike"]:
+            if col in opt_df.columns:
+                opt_styled = opt_styled.format({col: lambda v: "—" if pd.isna(v) else f"{int(v):,}"})
+        for col in ["Entry (₹)", "Target (₹)", "Stop Loss (₹)"]:
+            if col in opt_df.columns:
+                opt_styled = opt_styled.format(
+                    {col: lambda v: "—" if pd.isna(v) else f"{float(v):.1f}"}
+                )
+        st.dataframe(opt_styled, use_container_width=True, hide_index=True)
+        with st.expander("Option trade notes"):
+            for t in option_trades:
+                st.markdown(f"**{t.index}** — {t.action} {t.strike:,}")
+                st.caption(t.notes)
+    else:
+        st.info("Run prediction to generate option strike recommendations.")
 
     st.markdown("---")
     st.subheader("Signal distribution")
