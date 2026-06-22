@@ -22,7 +22,7 @@ from predictor.fetch_data import (
     get_latest_price,
     get_price_change_pct,
 )
-from predictor.trade_levels import format_entry_range
+from predictor.trade_levels import compute_daily_trade_levels, format_entry_range
 from predictor.indicators import compute_technical_score
 from predictor.sentiment import compute_sentiment_scores, fetch_all_headlines
 
@@ -190,10 +190,14 @@ def run_prediction(
             final_score = tech["total"] + sent["score"] + mom["total"]
             final_score = round(max(-100.0, min(100.0, final_score)), 2)
 
+            signal = label_signal(final_score)
+            price = round(get_latest_price(df), 2)
+            levels = compute_daily_trade_levels(df, price, signal)
+
             stock = StockScore(
                 symbol=symbol,
                 name=get_display_name(symbol),
-                price=round(get_latest_price(df), 2),
+                price=price,
                 score=final_score,
                 technical_score=tech["total"],
                 sentiment_score=sent["score"],
@@ -204,7 +208,13 @@ def run_prediction(
                 rsi=tech.get("rsi_value"),
                 sentiment_raw=sent.get("raw"),
                 sentiment_headline_count=sent.get("count", 0),
-                signal=label_signal(final_score),
+                signal=signal,
+                trade_action=levels["trade_action"],
+                entry_low=levels["entry_low"],
+                entry_high=levels["entry_high"],
+                target_price=levels["target_price"],
+                stop_loss=levels["stop_loss"],
+                risk_reward=levels["risk_reward"],
             )
             all_scores.append(stock)
 
@@ -266,7 +276,7 @@ def result_to_dataframe(
     trade_levels = (
         include_trade_levels
         if include_trade_levels is not None
-        else _is_intraday_result(result)
+        else True
     )
     if intraday:
         mom_cols = ("Open %", "30m %", "1h %")
@@ -311,6 +321,16 @@ def result_to_dataframe(
                     "Stop Loss": getattr(s, "stop_loss", None),
                     "R:R": getattr(s, "risk_reward", None),
                 })
+        elif trade_levels:
+            row["Action"] = _resolve_action(s)
+            row.update({
+                "Entry Range": format_entry_range(
+                    getattr(s, "entry_low", None), getattr(s, "entry_high", None)
+                ),
+                "Target": getattr(s, "target_price", None),
+                "Stop Loss": getattr(s, "stop_loss", None),
+                "R:R": getattr(s, "risk_reward", None),
+            })
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -320,6 +340,15 @@ def result_to_dataframe(
             "Entry Range", "Intraday Target", "Stop Loss", "R:R",
             "Technical", "Sentiment", "Momentum",
             "Open %", "30m %", "1h %",
+            "RSI", "News Count",
+        ]
+        df = df[[c for c in col_order if c in df.columns]]
+    elif not intraday and not df.empty:
+        col_order = [
+            "Symbol", "Company", "Price (INR)", "Score", "Signal", "Action",
+            "Entry Range", "Target", "Stop Loss", "R:R",
+            "Technical", "Sentiment", "Momentum",
+            "1D %", "5D %", "20D %",
             "RSI", "News Count",
         ]
         df = df[[c for c in col_order if c in df.columns]]

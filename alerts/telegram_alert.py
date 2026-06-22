@@ -168,24 +168,54 @@ def build_message(result: PredictionResult) -> str:
 # ---------------------------------------------------------------------------
 
 def _config_value(key: str) -> str:
-    """Read config from env or Streamlit Cloud secrets."""
-    value = os.getenv(key, "").strip()
-    if value:
-        return value
+    """Read config — Streamlit Cloud secrets override .env (deployed .env is often stale)."""
     try:
         import streamlit as st
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-        if key in st.secrets:
+        if get_script_run_ctx() is not None and key in st.secrets:
             return str(st.secrets[key]).strip()
     except Exception:
         pass
-    return ""
+    return os.getenv(key, "").strip()
 
 
-def _parse_chat_ids(chat_id: Optional[str] = None) -> list[str]:
-    """Return one or more chat IDs (comma-separated in TELEGRAM_CHAT_ID)."""
-    raw = chat_id or _config_value("TELEGRAM_CHAT_ID")
-    return [part.strip() for part in raw.split(",") if part.strip()]
+def telegram_config_summary() -> str:
+    """Human-readable summary of configured Telegram destinations."""
+    group_id = _config_value("TELEGRAM_GROUP_CHAT_ID")
+    personal_id = _config_value("TELEGRAM_CHAT_ID")
+    parts = []
+    if group_id:
+        parts.append(f"group={group_id}")
+    if personal_id:
+        parts.append(f"personal={personal_id}")
+    return ", ".join(parts) if parts else "(none configured)"
+
+
+def _get_all_chat_ids(chat_id: Optional[str] = None) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str) -> None:
+        for part in raw.split(","):
+            part = part.strip()
+            if part and part not in seen:
+                seen.add(part)
+                ids.append(part)
+
+    if chat_id:
+        _add(chat_id)
+        return ids
+
+    group_id = _config_value("TELEGRAM_GROUP_CHAT_ID")
+    if group_id:
+        _add(group_id)
+
+    personal_or_list = _config_value("TELEGRAM_CHAT_ID")
+    if personal_or_list:
+        _add(personal_or_list)
+
+    return ids
 
 
 def send_telegram_message(
@@ -193,25 +223,28 @@ def send_telegram_message(
     bot_token: Optional[str] = None,
     chat_id: Optional[str] = None,
     parse_mode: str = "Markdown",
-) -> tuple[bool, str]:
+) -> tuple[bool, str, list[str], list[str]]:
     """
     Send a plain text message to one or more Telegram chats.
 
-    TELEGRAM_CHAT_ID may be a single ID or comma-separated list, e.g.
-    ``-1001234567890,5966698118`` (group + personal).
-
-    Returns (success, detail_message).
+    Returns (success, summary, sent_to_ids, error_lines).
     """
     token = (bot_token or _config_value("TELEGRAM_BOT_TOKEN")).strip()
-    chat_ids = _parse_chat_ids(chat_id)
+    chat_ids = _get_all_chat_ids(chat_id)
 
     if not token:
-        return False, "TELEGRAM_BOT_TOKEN is missing (.env or Streamlit secrets)."
+        return False, "TELEGRAM_BOT_TOKEN is missing (.env or Streamlit secrets).", [], []
     if not chat_ids:
-        return False, "TELEGRAM_CHAT_ID is missing (.env or Streamlit secrets)."
+        return (
+            False,
+            "No Telegram destination. Set TELEGRAM_GROUP_CHAT_ID (group) and/or "
+            "TELEGRAM_CHAT_ID in .env or Streamlit secrets.",
+            [],
+            [],
+        )
 
     url = TELEGRAM_API_BASE.format(token=token)
-    sent_any = False
+    sent_to: list[str] = []
     errors: list[str] = []
 
     for cid in chat_ids:
@@ -230,7 +263,7 @@ def send_telegram_message(
                     response = requests.post(url, json=plain_payload, timeout=15)
             response.raise_for_status()
             logger.info("Telegram alert sent to chat_id=%s", cid)
-            sent_any = True
+            sent_to.append(cid)
         except requests.exceptions.HTTPError:
             try:
                 detail = response.json().get("description", response.text)
@@ -244,14 +277,63 @@ def send_telegram_message(
             logger.error("Telegram request error — %s", msg)
             errors.append(msg)
 
-    if sent_any:
-        return True, "Telegram alert sent."
+    if sent_to and not errors:
+        return True, f"Delivered to {len(sent_to)} chat(s): {', '.join(sent_to)}", sent_to, []
+    if sent_to and errors:
+        return (
+            False,
+            f"Delivered to: {', '.join(sent_to)}. FAILED: {'; '.join(errors)}",
+            sent_to,
+            errors,
+        )
     if errors:
-        return False, errors[0]
-    return False, "Telegram send failed for all chat IDs."
+        return False, errors[0], [], errors
+    return False, "Telegram send failed for all chat IDs.", [], []
 
 
-def send_prediction_alert(result: PredictionResult) -> tuple[bool, str]:
+"""List chats from getUpdates (for debugging group id)."""
+    try:
+        import requests
+
+        token = _config_value("TELEGRAM_BOT_TOKEN")
+        if not token:
+            return []
+        r = requests.get(
+            f"https://api.telegram.org/bot{token}/getUpdates",
+            timeout=15,
+        )
+        data = r.json()
+        if not data.get("ok"):
+            return []
+        seen: dict[str, str] = {}
+        for update in data.get("result", []):
+            for key in ("message", "my_chat_member", "chat_member"):
+                obj = update.get(key)
+                if not obj or "chat" not in obj:
+                    continue
+                c = obj["chat"]
+                cid = str(c["id"])
+                seen[cid] = c.get("title") or c.get("first_name") or c.get("type", "?")
+        return list(seen.items())
+    except Exception:
+        return []
+
+
+def send_telegram_test() -> tuple[bool, str, list[str], list[str]]:
+    """Send a short test message to every configured Telegram destination."""
+    group_id = _config_value("TELEGRAM_GROUP_CHAT_ID")
+    personal_id = _config_value("TELEGRAM_CHAT_ID")
+    lines = [
+        "🧪 NSE Predictor — Telegram test",
+        f"Group ID configured: {group_id or '(not set)'}",
+        f"Personal ID configured: {personal_id or '(not set)'}",
+        "If you see this in your private bot chat but NOT the group, "
+        "the group chat_id is wrong — run scripts/get_telegram_chat_id.py",
+    ]
+    return send_telegram_message("\n".join(lines), parse_mode="")
+
+
+def send_prediction_alert(result: PredictionResult) -> tuple[bool, str, list[str], list[str]]:
     """
     Build and send the prediction result as a Telegram message.
 
@@ -260,7 +342,7 @@ def send_prediction_alert(result: PredictionResult) -> tuple[bool, str]:
     enabled = _config_value("ENABLE_TELEGRAM") or "true"
     if enabled.lower() == "false":
         logger.info("Telegram alerts disabled via ENABLE_TELEGRAM=false")
-        return False, "Telegram alerts are disabled (ENABLE_TELEGRAM=false)."
+        return False, "Telegram alerts are disabled (ENABLE_TELEGRAM=false).", [], []
 
     message = build_message(result)
     logger.debug("Telegram message:\n%s", message)

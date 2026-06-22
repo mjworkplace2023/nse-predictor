@@ -37,7 +37,15 @@ if not data.get("ok"):
     sys.exit(1)
 
 chats: dict[str, dict] = {}
+migrations: list[tuple[str, str]] = []
+
 for update in data.get("result", []):
+    msg = update.get("message") or {}
+    if "migrate_to_chat_id" in msg:
+        old_id = str(msg.get("chat", {}).get("id", "?"))
+        new_id = str(msg["migrate_to_chat_id"])
+        migrations.append((old_id, new_id))
+
     for key in ("message", "channel_post", "my_chat_member", "chat_member"):
         obj = update.get(key)
         if not obj or "chat" not in obj:
@@ -65,11 +73,34 @@ for cid, info in sorted(chats.items(), key=lambda x: x[0]):
     label = "GROUP" if cid.startswith("-") else "PERSONAL"
     print(f"  {cid:>16}  [{label:8}]  {kind}: {info['title']}")
 
-print("\nSet in .env (group only):")
+if migrations:
+    print("\n⚠️  Group was upgraded to supergroup — use the NEW id:")
+    for old_id, new_id in migrations:
+        print(f"  old {old_id}  →  TELEGRAM_GROUP_CHAT_ID={new_id}")
+
+print("\nSet in .env:\n")
 groups = [cid for cid in chats if cid.startswith("-")]
+personals = [cid for cid in chats if not cid.startswith("-")]
+
 if groups:
-    print(f"  TELEGRAM_CHAT_ID={groups[0]}")
-    print("\nOr send to both group and your private chat:")
-    print(f"  TELEGRAM_CHAT_ID={groups[0]},{os.getenv('TELEGRAM_CHAT_ID', '')}")
+    print("  # Group alerts (required for Telegram group):")
+    print(f"  TELEGRAM_GROUP_CHAT_ID={groups[0]}")
+    print("\n  # Optional — also send to your private bot chat:")
+    if personals:
+        print(f"  TELEGRAM_CHAT_ID={personals[0]}")
+    else:
+        print("  TELEGRAM_CHAT_ID=your_personal_user_id")
+    print("\n  # Or both in one line:")
+    print(f"  TELEGRAM_CHAT_ID={groups[0]},{personals[0] if personals else 'YOUR_USER_ID'}")
 else:
-    print("  (no group found yet — mention the bot in your group and rerun)")
+    print("  (no group found yet)")
+    print("  1. Add bot to your Telegram group")
+    print("  2. Send: @<YourBotUsername> test")
+    print("  3. Run this script again")
+    if personals:
+        print(f"\n  Personal chat only (current): TELEGRAM_CHAT_ID={personals[0]}")
+
+print(
+    "\nNote: If an old group id like -39477270 stopped working, the supergroup id "
+    "is usually -10039477270 (prepend -100 after the minus sign)."
+)

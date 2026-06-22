@@ -17,6 +17,11 @@ ATR_PERIOD = 14
 ATR_TARGET_MULT = 2.0
 ATR_STOP_MULT = 1.0
 
+# Swing (daily) uses wider ATR multiples — multi-day holds
+SWING_LOOKBACK_DAYS = 20
+SWING_TARGET_MULT = 2.5
+SWING_STOP_MULT = 1.25
+
 
 def _session_vwap(session_df: pd.DataFrame) -> float:
     if session_df.empty or session_df["Volume"].sum() == 0:
@@ -148,3 +153,91 @@ def format_entry_range(entry_low: Optional[float], entry_high: Optional[float]) 
     if abs(entry_low - entry_high) < 0.01:
         return f"₹{entry_low:,.2f}"
     return f"₹{entry_low:,.2f} – ₹{entry_high:,.2f}"
+
+
+def compute_daily_trade_levels(
+    df: pd.DataFrame,
+    price: float,
+    signal: str,
+) -> dict:
+    """
+    Compute swing trade plan from daily OHLCV (multi-day hold).
+
+    Uses 20-day high/low structure and daily ATR — wider targets than intraday.
+    """
+    empty = {
+        "trade_action": "WAIT",
+        "entry_low": None,
+        "entry_high": None,
+        "target_price": None,
+        "stop_loss": None,
+        "risk_reward": None,
+    }
+
+    if df.empty or price <= 0:
+        return empty
+
+    lookback = min(SWING_LOOKBACK_DAYS, len(df))
+    recent = df.tail(lookback)
+    swing_high = float(recent["High"].max())
+    swing_low = float(recent["Low"].min())
+    atr = _compute_atr(df)
+    if atr <= 0:
+        atr = price * 0.02
+
+    is_long = signal in ("BUY", "STRONG BUY")
+    is_short = signal in ("SELL", "STRONG SELL")
+
+    if not is_long and not is_short:
+        return {
+            **empty,
+            "entry_low": _round2(swing_low),
+            "entry_high": _round2(swing_high),
+        }
+
+    if is_long:
+        entry_low = _round2(min(price - 0.75 * atr, swing_low + 0.25 * atr))
+        entry_high = _round2(price)
+        if entry_low >= entry_high:
+            entry_low = _round2(price - 0.5 * atr)
+
+        target = _round2(max(price + SWING_TARGET_MULT * atr, swing_high))
+        stop_loss = _round2(min(price - SWING_STOP_MULT * atr, swing_low - 0.1 * atr))
+        if stop_loss >= entry_low:
+            stop_loss = _round2(entry_low - 0.5 * atr)
+
+        risk = price - stop_loss
+        reward = target - price
+        rr = _round2(reward / risk) if risk > 0 else None
+
+        return {
+            "trade_action": "LONG",
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "target_price": target,
+            "stop_loss": stop_loss,
+            "risk_reward": rr,
+        }
+
+    entry_low = _round2(price)
+    entry_high = _round2(max(price + 0.75 * atr, swing_high - 0.25 * atr))
+    if entry_high <= entry_low:
+        entry_high = _round2(price + 0.5 * atr)
+
+    target = _round2(min(price - SWING_TARGET_MULT * atr, swing_low))
+    stop_loss = _round2(max(price + SWING_STOP_MULT * atr, swing_high + 0.1 * atr))
+    if stop_loss <= entry_high:
+        stop_loss = _round2(entry_high + 0.5 * atr)
+
+    risk = stop_loss - price
+    reward = price - target
+    rr = _round2(reward / risk) if risk > 0 else None
+
+    return {
+        "trade_action": "SHORT",
+        "entry_low": entry_low,
+        "entry_high": entry_high,
+        "target_price": target,
+        "stop_loss": stop_loss,
+        "risk_reward": rr,
+    }

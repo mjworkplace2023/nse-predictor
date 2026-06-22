@@ -45,7 +45,11 @@ from predictor.scorer import (
 from predictor.intraday_scorer import run_intraday_prediction, get_intraday_config
 from predictor.trade_levels import format_entry_range
 from predictor.market_hours import is_market_open, market_status_message, now_ist
-from alerts.telegram_alert import send_prediction_alert
+from alerts.telegram_alert import (
+    list_known_telegram_chats,
+    send_telegram_test,
+    telegram_config_summary,
+)
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -84,6 +88,11 @@ DAILY_COLUMN_GUIDE = pd.DataFrame([
     {"Column": "20D %", "Meaning": "% price change over the last 20 trading days (~1 month)"},
     {"Column": "RSI", "Meaning": "14-day momentum; below 30 = oversold, above 70 = overbought"},
     {"Column": "News Count", "Meaning": "Number of news headlines matched to this stock"},
+    {"Column": "Action", "Meaning": "LONG = swing buy setup, SHORT = swing sell setup, WAIT = no clear trade"},
+    {"Column": "Entry Range", "Meaning": "Suggested buy/sell zone based on 20-day structure (₹ low – ₹ high)"},
+    {"Column": "Target", "Meaning": "Swing profit target from daily ATR + 20-day high/low"},
+    {"Column": "Stop Loss", "Meaning": "Suggested exit if trade goes wrong — limits loss"},
+    {"Column": "R:R", "Meaning": "Risk-to-reward ratio (reward ÷ risk). Above 1.5 is healthier"},
 ])
 
 INTRADAY_COLUMN_GUIDE = pd.DataFrame([
@@ -123,23 +132,31 @@ def _style_signal_or_action(val) -> str:
     return _STYLE_NEUTRAL
 
 
+def _result_has_trade_levels(result: PredictionResult) -> bool:
+    """True when scored stocks include entry / target / stop-loss fields."""
+    if result is None or not result.all_scores:
+        return False
+    sample = result.all_scores[0]
+    return getattr(sample, "target_price", None) is not None
+
+
 def _build_leaderboard_dataframe(
     result: PredictionResult,
     *,
     show_intraday_ui: bool,
-    has_intraday_trade_levels: bool,
+    has_trade_levels: bool,
 ) -> pd.DataFrame:
-    """Build leaderboard table; intraday price levels only from real intraday runs."""
+    """Build leaderboard table with trade-level columns when available."""
     df = result_to_dataframe(
         result,
         intraday_view=show_intraday_ui,
-        include_trade_levels=has_intraday_trade_levels,
+        include_trade_levels=has_trade_levels,
     )
 
     if "Target" in df.columns and "Intraday Target" not in df.columns:
         df = df.rename(columns={"Target": "Intraday Target"})
 
-    if show_intraday_ui and not has_intraday_trade_levels:
+    if show_intraday_ui and not has_trade_levels:
         drop_cols = [
             c for c in ("Entry Range", "Intraday Target", "Stop Loss", "R:R")
             if c in df.columns
@@ -162,7 +179,7 @@ def _leaderboard_column_config(df: pd.DataFrame) -> dict:
         config["Symbol"] = st.column_config.TextColumn("Symbol", pinned="left", width="small")
     if "Company" in df.columns:
         config["Company"] = st.column_config.TextColumn("Company", pinned="left", width="medium")
-    for col in ("Action", "Entry Range", "Intraday Target", "Stop Loss", "R:R"):
+    for col in ("Action", "Entry Range", "Target", "Intraday Target", "Stop Loss", "R:R"):
         if col in df.columns:
             config[col] = st.column_config.TextColumn(col, width="medium")
     return config
@@ -183,9 +200,9 @@ def _trade_field(stock, name: str, default=None):
     return getattr(stock, name, default)
 
 
-def _patch_legacy_intraday_scores(result: PredictionResult) -> bool:
+def _patch_legacy_trade_scores(result: PredictionResult) -> bool:
     """Backfill missing trade-level attrs on old session-cached StockScore objects."""
-    if result is None or result.mode != "intraday" or not result.all_scores:
+    if result is None or not result.all_scores:
         return False
     patched = False
     for stock in result.all_scores:
@@ -300,6 +317,19 @@ def _render_daily_score_explainer() -> None:
             "- **1D %** = last 1 trading day (weight: ±15)\n"
             "- **5D %** = last 5 trading days (weight: ±10)\n"
             "- **20D %** = last 20 trading days (weight: ±5)"
+        )
+
+
+def _render_daily_trade_levels_explainer() -> None:
+    with st.expander("📍 Swing Trade Levels — Entry, Target & Stop Loss", expanded=False):
+        st.markdown(
+            "Levels are **rule-based estimates** from 20-day price structure and daily ATR — "
+            "for multi-day swing holds, not same-day trades.\n\n"
+            "- **Entry Range** — pullback zone toward recent support (LONG) or rally zone (SHORT)\n"
+            "- **Target** — profit level using 2.5× daily ATR and 20-day high/low\n"
+            "- **Stop Loss** — exit if wrong, below 20-day low (LONG) or above 20-day high (SHORT)\n"
+            "- **R:R** — reward ÷ risk; above 1.5 is healthier\n\n"
+            "_Re-run prediction to refresh levels after market moves._"
         )
 
 
@@ -438,7 +468,7 @@ if is_intraday:
     )
 else:
     st.sidebar.info(
-        "Daily mode — switch to **Intraday (15-min)** for trade-level columns"
+        "Daily swing mode — leaderboard includes Action, Entry Range, Target, Stop Loss"
     )
 
 auto_refresh = st.sidebar.checkbox(
@@ -448,6 +478,30 @@ auto_refresh = st.sidebar.checkbox(
     help="Only runs during NSE market hours (09:15–15:30 IST, weekdays).",
 )
 send_telegram = st.sidebar.checkbox("Send Telegram alert after run", value=False)
+st.sidebar.caption(f"Telegram → {telegram_config_summary()}")
+
+if st.sidebar.button("📨 Test Telegram delivery", use_container_width=True):
+    with st.spinner("Sending test message…"):
+        ok, detail, sent_to, errors = send_telegram_test()
+    if ok and not errors:
+        st.sidebar.success(f"✅ {detail}")
+    elif sent_to and errors:
+        st.sidebar.warning(f"⚠️ Partial — {detail}")
+    else:
+        st.sidebar.error(f"❌ {detail}")
+    for err in errors:
+        st.sidebar.caption(err)
+
+    known = list_known_telegram_chats()
+    if known:
+        st.sidebar.markdown("**Chats bot can see:**")
+        for cid, name in sorted(known):
+            tag = "GROUP" if cid.startswith("-") else "personal"
+            st.sidebar.caption(f"`{cid}` ({tag}) {name}")
+    else:
+        st.sidebar.caption(
+            "No group seen yet — in Telegram group send: @YourBotUsername test, then retry."
+        )
 
 st.sidebar.markdown("---")
 st.sidebar.caption(market_status_message())
@@ -495,11 +549,13 @@ def _run_prediction(intraday: bool, interval: str, n: int) -> PredictionResult:
 
 def _dispatch_alerts(res: PredictionResult, telegram: bool) -> None:
     if telegram:
-        ok, detail = send_prediction_alert(res)
-        if ok:
-            st.success("✅ Telegram alert sent!")
+        ok, detail, sent_to, errors = send_prediction_alert(res)
+        if ok and not errors:
+            st.success(f"✅ Telegram alert sent! ({detail})")
+        elif sent_to and errors:
+            st.warning(f"⚠️ Telegram partial delivery — {detail}")
         else:
-            st.warning(f"⚠️ Telegram alert failed — {detail}")
+            st.error(f"❌ Telegram alert failed — {detail}")
 
 
 if run_button:
@@ -547,16 +603,16 @@ if result is not None and _is_intraday_result(result):
     result.mode = "intraday"
 
 show_intraday_ui = is_intraday or _is_intraday_result(result)
-has_intraday_trade_levels = _is_intraday_result(result)
+has_trade_levels = _result_has_trade_levels(result)
 
-if result is not None and is_intraday and not has_intraday_trade_levels:
+if result is not None and is_intraday and not _is_intraday_result(result):
     st.error(
         "**Intraday mode is selected** but your last run was **Daily (Swing)**. "
         "Intraday target, entry, and stop-loss columns appear only after you "
         "click **Run Prediction Now** in intraday mode."
     )
 
-if _patch_legacy_intraday_scores(result):
+if _patch_legacy_trade_scores(result):
     st.info(
         "Cached results loaded. Click **Run Prediction Now** to refresh "
         "entry, target, and stop-loss levels."
@@ -658,6 +714,7 @@ if result.mode == "intraday":
     _render_trade_levels_explainer()
 else:
     _render_daily_score_explainer()
+    _render_daily_trade_levels_explainer()
 
 # ---------------------------------------------------------------------------
 # Tab layout
@@ -676,7 +733,7 @@ with tab_overview:
     df_all = _build_leaderboard_dataframe(
         result,
         show_intraday_ui=show_intraday_ui,
-        has_intraday_trade_levels=has_intraday_trade_levels,
+        has_trade_levels=has_trade_levels,
     )
 
     if df_all.empty:
