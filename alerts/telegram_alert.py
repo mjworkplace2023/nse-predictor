@@ -291,10 +291,9 @@ def send_telegram_message(
     return False, "Telegram send failed for all chat IDs.", [], []
 
 
-"""List chats from getUpdates (for debugging group id)."""
+def list_known_telegram_chats() -> list[tuple[str, str]]:
+    """List chats from getUpdates (for debugging group id)."""
     try:
-        import requests
-
         token = _config_value("TELEGRAM_BOT_TOKEN")
         if not token:
             return []
